@@ -1,4 +1,9 @@
-import type { Meeting } from "../types/meeting";
+import type {
+  Meeting,
+  Transcript,
+  SpeakerTranscript,
+  Summary,
+} from "../types/meeting";
 
 const API_BASE_URL = "http://127.0.0.1:8000";
 
@@ -29,4 +34,28 @@ export async function getMeetings(): Promise<Meeting[]> {
 
 export async function getMeeting(id: string): Promise<Meeting> {
   return request<Meeting>(`/meetings/${id}`);
+}
+
+export async function getTranscript(
+  id: string,
+): Promise<Transcript> {
+  return request<Transcript>(
+    `/meetings/${id}/transcript`,
+  );
+}
+
+export async function getSpeakerTranscript(
+  id: string,
+): Promise<SpeakerTranscript> {
+  return request<SpeakerTranscript>(
+    `/meetings/${id}/speaker-transcript`,
+  );
+}
+
+export async function getSummary(
+  id: string,
+): Promise<Summary> {
+  return request<Summary>(
+    `/meetings/${id}/summary`,
+  );
 }

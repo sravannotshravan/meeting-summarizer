@@ -353,6 +353,64 @@ def get_transcript(
 
 
 # ============================================================
+# Get speaker transcript
+# ============================================================
+
+@app.get(
+    "/meetings/{meeting_id}/speaker-transcript"
+)
+def get_speaker_transcript(
+    meeting_id: str
+):
+
+    connection = get_connection()
+
+    row = connection.execute(
+        """
+        SELECT speaker_transcript_path
+        FROM meetings
+        WHERE id = ?
+        """,
+        (meeting_id,)
+    ).fetchone()
+
+    connection.close()
+
+    if row is None:
+
+        raise HTTPException(
+            status_code=404,
+            detail="Meeting not found"
+        )
+
+    if not row["speaker_transcript_path"]:
+
+        raise HTTPException(
+            status_code=404,
+            detail="Speaker transcript not available"
+        )
+
+    speaker_transcript_path = (
+        PROJECT_ROOT
+        / row["speaker_transcript_path"]
+    )
+
+    if not speaker_transcript_path.exists():
+
+        raise HTTPException(
+            status_code=404,
+            detail="Speaker transcript file not found"
+        )
+
+    with speaker_transcript_path.open(
+        "r",
+        encoding="utf-8"
+    ) as file:
+
+        return json.load(file)
+
+
+# ============================================================
 # Get summary
 # ============================================================
 
