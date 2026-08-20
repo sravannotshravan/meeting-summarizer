@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Environment variables / secrets
+.env
+.env.*
+!.env.example
+
+# Local database
+data/*.db
+data/*.db-*
+*.sqlite
+*.sqlite3
+
+# Meeting recordings and generated data
+data/meetings/
+ai/transcripts/
+ai/summaries/
+
+# Local model files
+*.bin
+*.gguf
+*.ggml
+models/
+
+# Node
+node_modules/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+EOF
+
+# Test recordings / generated outputs
+samples/
+summaries/
+transcripts/
+test_summary.json
+EOF
