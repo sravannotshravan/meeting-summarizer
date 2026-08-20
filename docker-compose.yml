@@ -3,7 +3,7 @@ services:
   # 1. Local LLM Server (llama.cpp)
   # ============================================================
   llama-server:
-    image: ghcr.io/ggerganov/llama.cpp:server
+    image: ghcr.io/ggml-org/llama.cpp:server
     container_name: meetingai-llama-server
     restart: unless-stopped
     ports:
