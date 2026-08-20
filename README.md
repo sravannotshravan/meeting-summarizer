@@ -47,9 +47,58 @@ The output is a structured JSON summary containing:
 
 ---
 
-## 🐳 Quickstart with Docker Compose
+---
 
-The easiest way to run the entire stack (llama.cpp server, backend with whisper + pyannote, and frontend) is with Docker.
+> [!WARNING]
+> **Docker Setup Status**: The `Dockerfile.backend`, `Dockerfile.frontend`, and `docker-compose.yml` currently have known issues with environment building and will be fixed soon.
+> In the meantime, please use the **Automated Local Setup & Startup Scripts** (`./setup.sh` and `./start.sh`) below to run the application seamlessly.
+
+---
+
+## ⚡ Quickstart (Local Scripts)
+
+The easiest way to run the stack is with the provided startup scripts. They automatically handle system prerequisites, virtual environments, whisper.cpp, llama.cpp, models, and dependencies.
+
+### 1. One-Time Setup
+
+Run the setup script to check tools, create `.env`, set up `.venv`, compile whisper.cpp (if needed), download the Whisper model, and install frontend dependencies:
+
+```bash
+chmod +x setup.sh start.sh
+./setup.sh
+```
+
+### 2. Configure Environment
+
+Edit `.env` and set your [Hugging Face Token](https://huggingface.co/settings/tokens) (required for Pyannote speaker diarization):
+
+```env
+HF_TOKEN=hf_your_actual_token_here
+```
+
+*(Optional)* If you already run an external LLM server or Ollama, you can customize `LLAMA_URL` and ports in `.env`.
+
+### 3. Start Application
+
+Launch all services (LLM server, FastAPI backend, and React frontend) with a single command:
+
+```bash
+./start.sh
+```
+
+- **Web UI**: [http://localhost:5173](http://localhost:5173)
+- **Backend API**: [http://localhost:8000](http://localhost:8000)
+- **Interactive API Docs**: [http://localhost:8000/docs](http://localhost:8000/docs)
+- **LLM Server**: [http://localhost:8080](http://localhost:8080)
+
+Press `Ctrl+C` anytime to gracefully stop all running services.
+
+---
+
+## 🐳 Docker Deployment (Under Maintenance)
+
+> *Note: Dockerfile and compose configurations are undergoing updates and will be fully supported shortly.*
+
 
 ### 1. Prerequisites
 
