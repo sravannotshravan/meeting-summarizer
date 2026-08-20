@@ -15,6 +15,7 @@ import "./App.css";
 import { getMeetings } from "./lib/api";
 import type { Meeting } from "./types/meeting";
 import { useNavigate } from "react-router-dom";
+import NewMeetingModal from "./components/NewMeetingModal";
 
 function formatDuration(seconds: number | null): string {
   if (seconds === null) {
@@ -42,6 +43,8 @@ function App() {
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [isModalOpen, setIsModalOpen] = useState(false);
 
   useEffect(() => {
     async function loadMeetings() {
@@ -62,6 +65,16 @@ function App() {
     loadMeetings();
   }, []);
 
+  const filteredMeetings = meetings.filter((meeting) => {
+    if (!searchQuery.trim()) return true;
+    const q = searchQuery.toLowerCase();
+    return (
+      meeting.title.toLowerCase().includes(q) ||
+      meeting.original_filename.toLowerCase().includes(q) ||
+      (meeting.language && meeting.language.toLowerCase().includes(q))
+    );
+  });
+
   const totalDuration = meetings.reduce(
     (total, meeting) => total + (meeting.duration ?? 0),
     0,
@@ -71,8 +84,19 @@ function App() {
     (meeting) => meeting.status === "completed",
   ).length;
 
+  const handleMeetingCreated = (newMeetingId: string) => {
+    setIsModalOpen(false);
+    navigate(`/meetings/${newMeetingId}`);
+  };
+
   return (
     <div className="app">
+      <NewMeetingModal
+        isOpen={isModalOpen}
+        onClose={() => setIsModalOpen(false)}
+        onSuccess={handleMeetingCreated}
+      />
+
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-icon">
@@ -81,18 +105,21 @@ function App() {
           <span>MeetingAI</span>
         </div>
 
-        <button className="new-meeting">
+        <button
+          className="new-meeting"
+          onClick={() => setIsModalOpen(true)}
+        >
           <Plus size={18} />
           New meeting
         </button>
 
         <nav className="nav">
-          <a className="nav-item active">
+          <a className="nav-item active" href="/">
             <Home size={18} />
             Meetings
           </a>
 
-          <a className="nav-item">
+          <a className="nav-item" href="/">
             <FileAudio size={18} />
             Recordings
           </a>
@@ -102,7 +129,12 @@ function App() {
           <div className="section-label">Recent</div>
 
           {meetings.slice(0, 5).map((meeting) => (
-            <div className="meeting-item" key={meeting.id}>
+            <div
+              className="meeting-item"
+              key={meeting.id}
+              onClick={() => navigate(`/meetings/${meeting.id}`)}
+              style={{ cursor: "pointer" }}
+            >
               <div className="meeting-dot" />
 
               <div>
@@ -128,7 +160,11 @@ function App() {
           <div className="search">
             <Search size={18} />
 
-            <input placeholder="Search meetings..." />
+            <input
+              placeholder="Search meetings..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
 
             <kbd>⌘ K</kbd>
           </div>
@@ -151,7 +187,10 @@ function App() {
               </p>
             </div>
 
-            <button className="primary-button">
+            <button
+              className="primary-button"
+              onClick={() => setIsModalOpen(true)}
+            >
               <Plus size={18} />
               New meeting
             </button>
@@ -197,11 +236,20 @@ function App() {
 
           <section className="meetings-section">
             <div className="section-heading">
-              <h2>Recent meetings</h2>
+              <h2>
+                {searchQuery.trim()
+                  ? `Search results (${filteredMeetings.length})`
+                  : "Recent meetings"}
+              </h2>
 
-              <button className="filter-button">
-                All meetings
-              </button>
+              {searchQuery.trim() && (
+                <button
+                  className="filter-button"
+                  onClick={() => setSearchQuery("")}
+                >
+                  Clear search
+                </button>
+              )}
             </div>
 
             {loading && (
@@ -225,18 +273,41 @@ function App() {
               </div>
             )}
 
-            {!loading && !error && meetings.length === 0 && (
+            {!loading && !error && filteredMeetings.length === 0 && (
               <div className="empty-state">
                 <FileAudio size={28} />
-                <strong>No meetings yet</strong>
-                <span>Upload a recording to get started.</span>
+                <strong>
+                  {searchQuery.trim()
+                    ? "No matching meetings found"
+                    : "No meetings yet"}
+                </strong>
+                <span>
+                  {searchQuery.trim()
+                    ? "Try adjusting your search query."
+                    : "Upload a recording to get started."}
+                </span>
+                {!searchQuery.trim() && (
+                  <button
+                    className="primary-button"
+                    style={{ marginTop: "12px" }}
+                    onClick={() => setIsModalOpen(true)}
+                  >
+                    <Plus size={16} />
+                    New meeting
+                  </button>
+                )}
               </div>
             )}
 
-            {!loading && !error && meetings.length > 0 && (
+            {!loading && !error && filteredMeetings.length > 0 && (
               <div className="meeting-grid">
-                {meetings.map((meeting) => (
-                  <article className="meeting-card" key={meeting.id}>
+                {filteredMeetings.map((meeting) => (
+                  <article
+                    className="meeting-card"
+                    key={meeting.id}
+                    onClick={() => navigate(`/meetings/${meeting.id}`)}
+                    style={{ cursor: "pointer" }}
+                  >
                     <div className="card-icon">
                       <FileAudio size={22} />
                     </div>
@@ -253,27 +324,24 @@ function App() {
                           {meeting.status}
                         </span>
 
-                        <span>
-                          {formatDate(meeting.created_at)}
-                        </span>
+                        <span>{formatDate(meeting.created_at)}</span>
                       </div>
 
                       <h3>{meeting.title}</h3>
 
-                      <p>
-                        {meeting.original_filename}
-                      </p>
+                      <p>{meeting.original_filename}</p>
 
                       <div className="card-footer">
-                        <span>
-                          {formatDuration(meeting.duration)}
-                        </span>
+                        <span>{formatDuration(meeting.duration)}</span>
 
-                        <span>
-                          {meeting.language?.toUpperCase() ?? "—"}
-                        </span>
+                        <span>{meeting.language?.toUpperCase() ?? "—"}</span>
 
-                        <button onClick={() => navigate(`/meetings/${meeting.id}`)}>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            navigate(`/meetings/${meeting.id}`);
+                          }}
+                        >
                           Open
                         </button>
                       </div>

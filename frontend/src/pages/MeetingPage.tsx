@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 
-import { getMeeting, getSpeakerTranscript, getSummary } from "../lib/api";
+import { getMeeting, getSpeakerTranscript, getSummary, API_BASE_URL } from "../lib/api";
 import type {
   Meeting,
   SpeakerTranscript,
@@ -103,23 +103,25 @@ export default function MeetingPage() {
   const segmentRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const speakerColorMap = useRef<Map<string, number>>(new Map());
 
-  // ── Fetch all data ──────────────────────────────────────
+  // ── Fetch meeting data ──────────────────────────────────
 
-  useEffect(() => {
-    if (!id) return;
+  const fetchMeetingData = useCallback(
+    async (showLoading = true) => {
+      if (!id) return;
 
-    async function loadAll() {
       try {
-        setLoading(true);
-        setError(null);
+        if (showLoading) {
+          setLoading(true);
+          setError(null);
+        }
 
-        const meetingData = await getMeeting(id!);
+        const meetingData = await getMeeting(id);
         setMeeting(meetingData);
 
-        // Fetch transcript + summary in parallel (they may 404 if still processing)
+        // If completed or transcribed, fetch transcript & summary
         const [transcriptResult, summaryResult] = await Promise.allSettled([
-          getSpeakerTranscript(id!),
-          getSummary(id!),
+          getSpeakerTranscript(id),
+          getSummary(id),
         ]);
 
         if (transcriptResult.status === "fulfilled") {
@@ -131,14 +133,38 @@ export default function MeetingPage() {
         }
       } catch (err) {
         console.error(err);
-        setError("Unable to load this meeting.");
+        if (showLoading) {
+          setError("Unable to load this meeting.");
+        }
       } finally {
-        setLoading(false);
+        if (showLoading) {
+          setLoading(false);
+        }
       }
-    }
+    },
+    [id],
+  );
 
-    loadAll();
-  }, [id]);
+  useEffect(() => {
+    fetchMeetingData(true);
+  }, [fetchMeetingData]);
+
+  // ── Polling while processing ────────────────────────────
+
+  useEffect(() => {
+    if (!meeting) return;
+
+    const isProcessing =
+      meeting.status !== "completed" && meeting.status !== "failed";
+
+    if (!isProcessing) return;
+
+    const interval = setInterval(() => {
+      fetchMeetingData(false);
+    }, 2500);
+
+    return () => clearInterval(interval);
+  }, [meeting?.status, fetchMeetingData]);
 
   // ── Audio sync ──────────────────────────────────────────
 
@@ -154,10 +180,9 @@ export default function MeetingPage() {
         }
       }
 
-      // If between segments, find the closest upcoming one
+      // If between segments, find closest upcoming
       for (let i = 0; i < segments.length; i++) {
         if (time < segments[i].start) {
-          // Check if we're closer to this segment or the previous one
           if (i > 0 && time >= segments[i - 1].end) {
             const gapToPrev = time - segments[i - 1].end;
             const gapToNext = segments[i].start - time;
@@ -245,14 +270,27 @@ export default function MeetingPage() {
   // ── Render helpers ──────────────────────────────────────
 
   const segments: SpeakerTranscriptSegment[] = transcript?.segments ?? [];
+  const isProcessing =
+    meeting.status !== "completed" && meeting.status !== "failed";
 
   const renderTranscript = () => {
     if (!transcript || segments.length === 0) {
       return (
         <div className="panel-placeholder">
-          {meeting.status === "completed"
-            ? "No transcript available for this meeting."
-            : "Transcript will appear once processing is complete."}
+          {isProcessing ? (
+            <div className="processing-indicator">
+              <LoaderCircle className="spinner" size={20} />
+              <span>
+                {meeting.status === "transcribing"
+                  ? "Whisper is transcribing audio..."
+                  : meeting.status === "diarizing"
+                    ? "Pyannote is identifying speakers..."
+                    : "Transcript will appear shortly..."}
+              </span>
+            </div>
+          ) : (
+            <span>No transcript available for this meeting.</span>
+          )}
         </div>
       );
     }
@@ -261,7 +299,10 @@ export default function MeetingPage() {
       <div className="transcript-scroll">
         {segments.map((segment, index) => {
           const isActive = index === activeIndex;
-          const color = getSpeakerColor(segment.speaker, speakerColorMap.current);
+          const color = getSpeakerColor(
+            segment.speaker,
+            speakerColorMap.current,
+          );
 
           return (
             <div
@@ -302,9 +343,18 @@ export default function MeetingPage() {
     if (!summary) {
       return (
         <div className="panel-placeholder">
-          {meeting.status === "completed"
-            ? "No summary available for this meeting."
-            : "Summary will appear once processing is complete."}
+          {isProcessing ? (
+            <div className="processing-indicator">
+              <Sparkles className="spinner" size={20} />
+              <span>
+                {meeting.status === "summarizing"
+                  ? "Qwen3 is generating meeting summary..."
+                  : "Summary will be generated once transcript is ready..."}
+              </span>
+            </div>
+          ) : (
+            <span>No summary available for this meeting.</span>
+          )}
         </div>
       );
     }
@@ -416,8 +466,12 @@ export default function MeetingPage() {
           </div>
         </div>
 
-        <div className="meeting-status">
-          <span className="status-dot" />
+        <div
+          className={`meeting-status ${isProcessing ? "processing" : "completed"}`}
+        >
+          <span
+            className={`status-dot ${isProcessing ? "pulse" : ""}`}
+          />
           {meeting.status}
         </div>
       </header>
@@ -441,7 +495,7 @@ export default function MeetingPage() {
             ref={audioRef}
             className="audio-player"
             controls
-            src={`http://127.0.0.1:8000/meetings/${meeting.id}/audio`}
+            src={`${API_BASE_URL}/meetings/${meeting.id}/audio`}
           />
         </section>
 
@@ -472,3 +526,4 @@ export default function MeetingPage() {
     </div>
   );
 }
+

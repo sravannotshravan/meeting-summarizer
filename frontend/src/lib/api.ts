@@ -5,7 +5,10 @@ import type {
   Summary,
 } from "../types/meeting";
 
-const API_BASE_URL = "http://127.0.0.1:8000";
+export const API_BASE_URL =
+  import.meta.env.VITE_API_URL !== undefined
+    ? import.meta.env.VITE_API_URL
+    : "http://127.0.0.1:8000";
 
 async function request<T>(
   endpoint: string,
@@ -58,4 +61,35 @@ export async function getSummary(
   return request<Summary>(
     `/meetings/${id}/summary`,
   );
+}
+
+export async function uploadMeeting(
+  file: File,
+  title?: string,
+): Promise<{ id: string; title: string; filename: string; status: string }> {
+  const formData = new FormData();
+  formData.append("file", file);
+  if (title && title.trim()) {
+    formData.append("title", title.trim());
+  }
+
+  const response = await fetch(`${API_BASE_URL}/meetings`, {
+    method: "POST",
+    body: formData,
+  });
+
+  if (!response.ok) {
+    let errorMsg = `Upload failed (${response.status})`;
+    try {
+      const err = await response.json();
+      if (err?.detail) {
+        errorMsg = typeof err.detail === "string" ? err.detail : JSON.stringify(err.detail);
+      }
+    } catch {
+      // ignore
+    }
+    throw new Error(errorMsg);
+  }
+
+  return response.json();
 }

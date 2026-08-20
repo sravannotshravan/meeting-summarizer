@@ -31,22 +31,37 @@ from backend.storage import (
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-WHISPER_CLI = (
-    Path.home()
-    / "whisper.cpp"
-    / "build"
-    / "bin"
-    / "whisper-cli"
-)
+import os
 
-WHISPER_MODEL = (
-    Path.home()
-    / "whisper.cpp"
-    / "models"
-    / "ggml-small.bin"
-)
+WHISPER_CLI = Path(
+    os.getenv(
+        "WHISPER_CLI_PATH",
+        str(
+            Path.home()
+            / "whisper.cpp"
+            / "build"
+            / "bin"
+            / "whisper-cli"
+        )
+    )
+).resolve()
 
-LLAMA_URL = "http://127.0.0.1:8080/v1/chat/completions"
+WHISPER_MODEL = Path(
+    os.getenv(
+        "WHISPER_MODEL_PATH",
+        str(
+            Path.home()
+            / "whisper.cpp"
+            / "models"
+            / "ggml-small.bin"
+        )
+    )
+).resolve()
+
+LLAMA_URL = os.getenv(
+    "LLAMA_URL",
+    "http://127.0.0.1:8080/v1/chat/completions"
+)
 
 MEETINGS_DIR = PROJECT_ROOT / "data" / "meetings"
 
