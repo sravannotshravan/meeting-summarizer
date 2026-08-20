@@ -29,7 +29,7 @@ def get_connection():
 
 def initialize_database():
     """
-    Create the meetings table if it doesn't already exist.
+    Create the meetings table if it doesn't already exist and ensure all columns are present.
     """
 
     connection = get_connection()
@@ -38,29 +38,28 @@ def initialize_database():
         """
         CREATE TABLE IF NOT EXISTS meetings (
             id TEXT PRIMARY KEY,
-
             title TEXT NOT NULL,
-
             original_filename TEXT NOT NULL,
-
             audio_path TEXT,
-
             transcript_path TEXT,
-
+            speaker_transcript_path TEXT,
             summary_path TEXT,
-
             status TEXT NOT NULL,
-
             duration REAL,
-
             language TEXT,
-
             created_at TEXT NOT NULL,
-
             updated_at TEXT NOT NULL
         )
         """
     )
+
+    columns = [
+        col[1] for col in connection.execute("PRAGMA table_info(meetings)").fetchall()
+    ]
+    if "speaker_transcript_path" not in columns:
+        connection.execute(
+            "ALTER TABLE meetings ADD COLUMN speaker_transcript_path TEXT"
+        )
 
     connection.commit()
     connection.close()
