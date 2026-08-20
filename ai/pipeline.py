@@ -7,9 +7,20 @@ from pathlib import Path
 
 import requests
 
+from ai.alignment import (
+    align_transcript,
+    load_whisper_segments,
+    save_aligned_transcript,
+)
+from ai.diarization import (
+    diarize,
+    save_diarization,
+)
+
 from backend.database import initialize_database
 from backend.storage import (
     create_meeting,
+    save_speaker_transcript,
     update_meeting,
 )
 
@@ -38,6 +49,107 @@ WHISPER_MODEL = (
 LLAMA_URL = "http://127.0.0.1:8080/v1/chat/completions"
 
 MEETINGS_DIR = PROJECT_ROOT / "data" / "meetings"
+
+
+# ============================================================
+# Speaker transcript pipeline
+# ============================================================
+
+def create_speaker_transcript(
+    meeting_id: str,
+    audio_path: Path,
+    whisper_path: Path,
+) -> Path:
+    """
+    Run speaker diarization and align it with Whisper.
+
+    The resulting speaker-aware transcript is stored inside
+    the meeting's directory and linked in SQLite.
+    """
+
+    meeting_dir = (
+        MEETINGS_DIR
+        / meeting_id
+    )
+
+    diarization_path = (
+        meeting_dir
+        / "diarization.json"
+    )
+
+    aligned_temp_path = (
+        PROJECT_ROOT
+        / "ai"
+        / "transcripts"
+        / f"{meeting_id}_speaker_transcript.json"
+    )
+
+    print()
+    print("=" * 70)
+    print("SPEAKER-AWARE TRANSCRIPTION")
+    print("=" * 70)
+
+    # --------------------------------------------------------
+    # Diarization
+    # --------------------------------------------------------
+
+    print()
+    print("Running speaker diarization...")
+
+    diarization_segments, elapsed = diarize(
+        audio_path
+    )
+
+    save_diarization(
+        diarization_path,
+        diarization_segments,
+    )
+
+    print(
+        f"Diarization saved to:\n"
+        f"{diarization_path}"
+    )
+
+    # --------------------------------------------------------
+    # Whisper + diarization alignment
+    # --------------------------------------------------------
+
+    print()
+    print("Aligning Whisper transcript with speakers...")
+
+    whisper_segments, language, duration = (
+        load_whisper_segments(
+            whisper_path
+        )
+    )
+
+    aligned_segments = align_transcript(
+        whisper_segments,
+        diarization_segments,
+    )
+
+    save_aligned_transcript(
+        aligned_temp_path,
+        aligned_segments,
+        language,
+        duration,
+    )
+
+    # --------------------------------------------------------
+    # Store speaker transcript
+    # --------------------------------------------------------
+
+    speaker_transcript_path = save_speaker_transcript(
+        meeting_id,
+        aligned_temp_path,
+    )
+
+    print(
+        f"Speaker transcript saved to:\n"
+        f"{speaker_transcript_path}"
+    )
+
+    return speaker_transcript_path
 
 
 # ============================================================
@@ -629,6 +741,21 @@ def process_existing_meeting(
         )
 
         # ----------------------------------------------------
+        # Speaker diarization + alignment
+        # ----------------------------------------------------
+
+        update_meeting(
+            meeting_id,
+            status="diarizing"
+        )
+
+        create_speaker_transcript(
+            meeting_id,
+            audio_path,
+            transcript_path
+        )
+
+        # ----------------------------------------------------
         # Qwen
         # ----------------------------------------------------
 
@@ -676,7 +803,7 @@ def process_existing_meeting(
 
         raise
 
-    
+
 # ============================================================
 # Main pipeline
 # ============================================================
@@ -823,6 +950,21 @@ def main():
         print(
             f"Transcript length: "
             f"{len(transcript):,} characters"
+        )
+
+        # ----------------------------------------------------
+        # Speaker diarization + alignment
+        # ----------------------------------------------------
+
+        update_meeting(
+            meeting_id,
+            status="diarizing"
+        )
+
+        create_speaker_transcript(
+            meeting_id,
+            stored_audio,
+            transcript_path
         )
 
         print(

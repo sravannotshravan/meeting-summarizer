@@ -15,6 +15,8 @@ class Meeting:
 
     transcript_path: Optional[str]
 
+    speaker_transcript_path: Optional[str]
+
     summary_path: Optional[str]
 
     status: str

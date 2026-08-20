@@ -54,6 +54,8 @@ def create_meeting(
 
         transcript_path=None,
 
+        speaker_transcript_path=None,
+
         summary_path=None,
 
         status="uploaded",
@@ -77,6 +79,7 @@ def create_meeting(
             original_filename,
             audio_path,
             transcript_path,
+            speaker_transcript_path,
             summary_path,
             status,
             duration,
@@ -84,7 +87,7 @@ def create_meeting(
             created_at,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             meeting.id,
@@ -92,6 +95,7 @@ def create_meeting(
             meeting.original_filename,
             meeting.audio_path,
             meeting.transcript_path,
+            meeting.speaker_transcript_path,
             meeting.summary_path,
             meeting.status,
             meeting.duration,
@@ -133,6 +137,7 @@ def get_meeting(
         original_filename=row["original_filename"],
         audio_path=row["audio_path"],
         transcript_path=row["transcript_path"],
+        speaker_transcript_path=row["speaker_transcript_path"],
         summary_path=row["summary_path"],
         status=row["status"],
         duration=row["duration"],
@@ -156,6 +161,7 @@ def update_meeting(
         "title",
         "audio_path",
         "transcript_path",
+        "speaker_transcript_path",
         "summary_path",
         "status",
         "duration",
@@ -265,6 +271,40 @@ def save_transcript(
     update_meeting(
         meeting_id,
         transcript_path=str(
+            relative_path
+        )
+    )
+
+    return destination
+
+
+def save_speaker_transcript(
+    meeting_id: str,
+    source_path: Path
+) -> Path:
+
+    meeting_dir = (
+        MEETINGS_DIR
+        / meeting_id
+    )
+
+    destination = (
+        meeting_dir
+        / "speaker_transcript.json"
+    )
+
+    shutil.copy2(
+        source_path,
+        destination
+    )
+
+    relative_path = destination.relative_to(
+        PROJECT_ROOT
+    )
+
+    update_meeting(
+        meeting_id,
+        speaker_transcript_path=str(
             relative_path
         )
     )
