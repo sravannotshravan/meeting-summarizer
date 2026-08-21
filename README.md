@@ -7,9 +7,9 @@ No meeting audio, transcript, or summary is sent to a hosted AI API. The applica
 ## What CharchaNotes does
 
 - Uploads MP3, MP4, M4A, WAV, WebM, OGG, and FLAC recordings.
-- Stores meeting metadata in SQLite and meeting artifacts under \`data/meetings/{meeting_id}/\`.
-- Transcribes audio with whisper.cpp using the \`ggml-small.bin\` model.
-- Detects speakers with \`pyannote/speaker-diarization-community-1\`.
+- Stores meeting metadata in SQLite and meeting artifacts under `data/meetings/{meeting_id}/`.
+- Transcribes audio with whisper.cpp using the `ggml-small.bin` model.
+- Detects speakers with `pyannote/speaker-diarization-community-1`.
 - Aligns diarization intervals with Whisper segments using temporal overlap.
 - Sends the plain transcript to a local llama.cpp OpenAI-compatible endpoint.
 - Generates a structured JSON summary containing an overview, key points, decisions, and action items.
@@ -21,7 +21,7 @@ No meeting audio, transcript, or summary is sent to a hosted AI API. The applica
 
 ## Architecture
 
-\`\`\`
+```
 Browser
   React 19 + TypeScript + Vite
         |
@@ -38,9 +38,9 @@ FastAPI + Uvicorn
         |
         +--> llama-server:8080
                Qwen3-8B-GGUF:Q4_K_M
-\`\`\`
+```
 
-In Docker, Nginx serves the compiled React application and proxies \`/health\` and \`/meetings...\` requests to FastAPI. The browser therefore uses one origin: \`http://localhost:5173\`.
+In Docker, Nginx serves the compiled React application and proxies `/health` and `/meetings...` requests to FastAPI. The browser therefore uses one origin: `http://localhost:5173`.
 
 ## Docker setup
 
@@ -59,58 +59,98 @@ In Docker, Nginx serves the compiled React application and proxies \`/health\` a
 
 Run this from the repository root:
 
-\`\`\`bash
+```bash
 chmod +x docker-setup.sh
 ./docker-setup.sh
-\`\`\`
+```
 
 The script:
 
 1. Checks that Docker is available.
-2. Prompts for \`HF_TOKEN\` without echoing it.
-3. Writes the token to the local \`.env\` file.
+2. Prompts for `HF_TOKEN` without echoing it.
+3. Writes the token to the local `.env` file.
 4. Builds the backend and frontend images.
 5. Starts all services in the background.
 6. Prints service status and local URLs.
 
 The token is passed at runtime. It is not copied into a Docker image layer.
 
+### Windows PowerShell setup
+
+Start Docker Desktop with Linux containers enabled. From the repository folder, run:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\docker-setup.ps1
+```
+
+The script securely prompts for your Hugging Face token, writes it to .env, builds the images, and starts the complete stack. It uses the same docker-compose.yml as the Bash setup.
+
+If PowerShell blocks script execution, run:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\docker-setup.ps1
+```
+
+Windows service URLs:
+
+- Web UI: http://localhost:5173
+- FastAPI Swagger UI: http://localhost:8000/docs
+- FastAPI health: http://localhost:8000/health
+- llama.cpp health: http://localhost:8080/health
+
+Useful Windows commands:
+
+```powershell
+docker compose ps
+docker compose logs -f
+docker compose logs -f backend
+docker compose logs -f llama-server
+docker compose down
+```
+
+To start again without rebuilding:
+
+```powershell
+docker compose up -d
+```
+
 ### What downloads on first start
 
 The backend entrypoint downloads:
 
-\`\`\`
+```
 ggerganov/whisper.cpp/ggml-small.bin
-\`\`\`
+```
 
-using the Hugging Face token and stores it in the named volume \`charchanotes-whisper-models\`.
+using the Hugging Face token and stores it in the named volume `charchanotes-whisper-models`.
 
 The llama.cpp container uses the exact model reference:
 
-\`\`\`
+```
 Qwen/Qwen3-8B-GGUF:Q4_K_M
-\`\`\`
+```
 
 with the equivalent of your local command:
 
-\`\`\`bash
+```bash
 llama-server \
   -hf Qwen/Qwen3-8B-GGUF:Q4_K_M \
   -ngl 99 \
   -c 8192 \
   --host 0.0.0.0 \
   --port 8080
-\`\`\`
+```
 
-The llama.cpp cache is stored in \`charchanotes-llama-cache\`, so the model is not downloaded again after the volume is populated.
+The llama.cpp cache is stored in `charchanotes-llama-cache`, so the model is not downloaded again after the volume is populated.
 
 ### Docker services
 
 | Service | Container | Host URL | Responsibility |
 |---|---|---:|---|
-| \`llama-server\` | \`charchanotes-llama-server\` | \`localhost:8080\` | Qwen3-8B inference via llama.cpp |
-| \`backend\` | \`charchanotes-backend\` | \`localhost:8000\` | FastAPI, pipeline, SQLite, artifact storage |
-| \`frontend\` | \`charchanotes-frontend\` | \`localhost:5173\` | Nginx, React SPA, API reverse proxy |
+| `llama-server` | `charchanotes-llama-server` | `localhost:8080` | Qwen3-8B inference via llama.cpp |
+| `backend` | `charchanotes-backend` | `localhost:8000` | FastAPI, pipeline, SQLite, artifact storage |
+| `frontend` | `charchanotes-frontend` | `localhost:5173` | Nginx, React SPA, API reverse proxy |
 
 Open:
 
@@ -122,28 +162,28 @@ Open:
 
 Useful commands:
 
-\`\`\`bash
+```bash
 docker compose ps
 docker compose logs -f
 docker compose logs -f backend
 docker compose logs -f llama-server
 docker compose restart
 docker compose down
-\`\`\`
+```
 
-\`docker compose down\` keeps named model volumes. To remove downloaded model caches too:
+`docker compose down` keeps named model volumes. To remove downloaded model caches too:
 
-\`\`\`bash
+```bash
 docker compose down -v
-\`\`\`
+```
 
 ### GPU and CPU settings
 
-The default is \`LLAMA_N_GPU_LAYERS=99\`, matching your local command. If the Docker host has no usable GPU, set this in \`.env\`:
+The default is `LLAMA_N_GPU_LAYERS=99`, matching your local command. If the Docker host has no usable GPU, set this in `.env`:
 
-\`\`\`env
+```env
 LLAMA_N_GPU_LAYERS=0
-\`\`\`
+```
 
 The same Docker image can then run llama.cpp on CPU, although Qwen3-8B will be substantially slower.
 
@@ -151,23 +191,23 @@ Pyannote automatically selects CUDA when PyTorch can see a GPU and otherwise use
 
 ### Docker environment variables
 
-\`\`\`env
+```env
 HF_TOKEN=hf_your_token_here
 FRONTEND_PORT=5173
 BACKEND_PORT=8000
 LLAMA_PORT=8080
 LLAMA_N_GPU_LAYERS=99
-\`\`\`
+```
 
 The application-side defaults are:
 
-\`\`\`env
+```env
 WHISPER_CLI_PATH=/usr/local/bin/whisper-cli
 WHISPER_MODEL_PATH=/models/whisper/ggml-small.bin
 LLAMA_URL=http://llama-server:8080/v1/chat/completions
 LLAMA_MODEL=Qwen3-8B
 CORS_ORIGINS=*
-\`\`\`
+```
 
 ## Local development
 
@@ -175,7 +215,7 @@ Docker is the recommended reproducible deployment. For local development, the eq
 
 ### Start llama.cpp
 
-\`\`\`bash
+```bash
 cd ~/meeting-summarizer
 
 ~/llama.cpp/build/bin/llama-server \
@@ -184,11 +224,11 @@ cd ~/meeting-summarizer
   -c 8192 \
   --host 127.0.0.1 \
   --port 8080
-\`\`\`
+```
 
 ### Start FastAPI
 
-\`\`\`bash
+```bash
 cd ~/meeting-summarizer
 source .venv/bin/activate
 
@@ -196,44 +236,44 @@ uvicorn api.main:app \
   --host 0.0.0.0 \
   --port 8000 \
   --reload
-\`\`\`
+```
 
 ### Start React/Vite
 
-\`\`\`bash
+```bash
 cd ~/meeting-summarizer/frontend
 npm run dev -- --host 0.0.0.0
-\`\`\`
+```
 
-For local development, the frontend defaults to \`http://127.0.0.1:8000\`. Set \`VITE_API_URL\` if the backend runs elsewhere.
+For local development, the frontend defaults to `http://127.0.0.1:8000`. Set `VITE_API_URL` if the backend runs elsewhere.
 
 ## Backend specification
 
 ### FastAPI application
 
-The API entrypoint is \`api.main:app\`.
+The API entrypoint is `api.main:app`.
 
 FastAPI provides:
 
 - Typed request and response handling.
 - Multipart file uploads.
 - OpenAPI schema and interactive Swagger/ReDoc documentation.
-- CORS configuration through \`CORS_ORIGINS\`.
+- CORS configuration through `CORS_ORIGINS`.
 - Background scheduling of the long-running pipeline.
 - Health checks for Docker Compose.
 
-The current local worker uses a single \`ThreadPoolExecutor\` worker. This is appropriate for a local privacy-first application because GPU/model work is serialized and two large meetings do not compete for the same model resources.
+The current local worker uses a single `ThreadPoolExecutor` worker. This is appropriate for a local privacy-first application because GPU/model work is serialized and two large meetings do not compete for the same model resources.
 
 ### Pipeline states
 
 A meeting normally moves through:
 
-\`\`\`
+```
 uploaded -> queued -> transcribing -> transcribed
          -> diarizing -> summarizing -> completed
-\`\`\`
+```
 
-If any stage raises an exception, the meeting becomes \`failed\`.
+If any stage raises an exception, the meeting becomes `failed`.
 
 Retrying a failed meeting:
 
@@ -246,83 +286,83 @@ Retrying a failed meeting:
 
 | Method | Endpoint | Description |
 |---|---|---|
-| GET | \`/health\` | Returns API health status. |
-| GET | \`/meetings\` | Lists meetings newest first. |
-| POST | \`/meetings\` | Uploads a recording with multipart \`file\` and optional \`title\`. |
-| GET | \`/meetings/{id}\` | Returns meeting metadata and processing status. |
-| POST | \`/meetings/{id}/retry\` | Queues a complete retry for a failed meeting. |
-| GET | \`/meetings/{id}/transcript\` | Returns the raw Whisper transcript. |
-| GET | \`/meetings/{id}/speaker-transcript\` | Returns the aligned transcript and saved labels. |
-| PUT | \`/meetings/{id}/speakers\` | Saves a JSON speaker-ID-to-label map. |
-| GET | \`/meetings/{id}/summary\` | Returns the structured summary JSON. |
-| GET | \`/meetings/{id}/audio\` | Streams the original recording. |
-| DELETE | \`/meetings/{id}\` | Deletes the database row and meeting directory. |
+| GET | `/health` | Returns API health status. |
+| GET | `/meetings` | Lists meetings newest first. |
+| POST | `/meetings` | Uploads a recording with multipart `file` and optional `title`. |
+| GET | `/meetings/{id}` | Returns meeting metadata and processing status. |
+| POST | `/meetings/{id}/retry` | Queues a complete retry for a failed meeting. |
+| GET | `/meetings/{id}/transcript` | Returns the raw Whisper transcript. |
+| GET | `/meetings/{id}/speaker-transcript` | Returns the aligned transcript and saved labels. |
+| PUT | `/meetings/{id}/speakers` | Saves a JSON speaker-ID-to-label map. |
+| GET | `/meetings/{id}/summary` | Returns the structured summary JSON. |
+| GET | `/meetings/{id}/audio` | Streams the original recording. |
+| DELETE | `/meetings/{id}` | Deletes the database row and meeting directory. |
 
 The speaker-label request body is:
 
-\`\`\`json
+```json
 {
   "names": {
     "SPEAKER_00": "Priya",
     "SPEAKER_01": "Arjun"
   }
 }
-\`\`\`
+```
 
-Saved labels are stored in SQLite and written to each speaker transcript segment as \`speaker_label\`, while the raw \`speaker\` ID remains available.
+Saved labels are stored in SQLite and written to each speaker transcript segment as `speaker_label`, while the raw `speaker` ID remains available.
 
 ### Storage
 
 SQLite database:
 
-\`\`\`
+```
 data/meetings.db
-\`\`\`
+```
 
 Per-meeting files:
 
-\`\`\`
+```
 data/meetings/{uuid}/
   recording.<extension>
   transcript.json
   diarization.json
   speaker_transcript.json
   summary.json
-\`\`\`
+```
 
-The Docker Compose backend mounts \`./data:/app/data\`, so recordings and generated artifacts remain on the host.
+The Docker Compose backend mounts `./data:/app/data`, so recordings and generated artifacts remain on the host.
 
 ## LLM integration
 
 llama.cpp exposes an OpenAI-compatible endpoint at:
 
-\`\`\`
+```
 http://llama-server:8080/v1/chat/completions
-\`\`\`
+```
 
 The backend sends:
 
-- Model: \`Qwen3-8B\`
-- Temperature: \`0.1\`
-- Maximum output tokens: \`1200\`
-- Thinking disabled through \`chat_template_kwargs.enable_thinking=false\`
+- Model: `Qwen3-8B`
+- Temperature: `0.1`
+- Maximum output tokens: `1200`
+- Thinking disabled through `chat_template_kwargs.enable_thinking=false`
 - JSON schema response format
 
 The model server itself is started with:
 
-\`\`\`
+```
 -hf Qwen/Qwen3-8B-GGUF:Q4_K_M
 -ngl 99
 -c 8192
 --host 0.0.0.0
 --port 8080
-\`\`\`
+```
 
 ### System prompt
 
 The summarizer currently sends this system prompt:
 
-\`\`\`text
+```text
 You are a meeting analysis assistant.
 
 Analyze the provided meeting transcript and extract useful,
@@ -341,11 +381,11 @@ IMPORTANT RULES:
 6. Keep deadlines in the wording used in the transcript.
 7. Produce a concise but useful summary.
 8. Do not include irrelevant information.
-\`\`\`
+```
 
-The user prompt adds the timestamped plain transcript and explicitly tells Qwen that timestamps are references, not speaker labels. Summaries are constrained by \`SUMMARY_SCHEMA\` to:
+The user prompt adds the timestamped plain transcript and explicitly tells Qwen that timestamps are references, not speaker labels. Summaries are constrained by `SUMMARY_SCHEMA` to:
 
-\`\`\`json
+```json
 {
   "summary": "string",
   "key_points": ["string"],
@@ -358,7 +398,7 @@ The user prompt adds the timestamped plain transcript and explicitly tells Qwen 
     }
   ]
 }
-\`\`\`
+```
 
 ## Frontend specification
 
@@ -390,11 +430,11 @@ The frontend is a React 19 + TypeScript + Vite single-page application.
 
 Vite uses:
 
-\`\`\`env
+```env
 VITE_API_URL=http://127.0.0.1:8000
-\`\`\`
+```
 
-In Docker, \`VITE_API_URL\` is empty because Nginx proxies the API paths to the backend service.
+In Docker, `VITE_API_URL` is empty because Nginx proxies the API paths to the backend service.
 
 ## Troubleshooting
 
@@ -402,55 +442,55 @@ In Docker, \`VITE_API_URL\` is empty because Nginx proxies the API paths to the 
 
 Run:
 
-\`\`\`bash
+```bash
 ./docker-setup.sh
-\`\`\`
+```
 
-or add a valid token to \`.env\`:
+or add a valid token to `.env`:
 
-\`\`\`env
+```env
 HF_TOKEN=hf_...
-\`\`\`
+```
 
-The token must have access to \`pyannote/speaker-diarization-community-1\`.
+The token must have access to `pyannote/speaker-diarization-community-1`.
 
 ### llama-server is unhealthy
 
 Inspect:
 
-\`\`\`bash
+```bash
 docker compose logs llama-server
-\`\`\`
+```
 
 Confirm that the host can access Hugging Face and that the model reference is exactly:
 
-\`\`\`
+```
 Qwen/Qwen3-8B-GGUF:Q4_K_M
-\`\`\`
+```
 
-If the host has no GPU, set \`LLAMA_N_GPU_LAYERS=0\`.
+If the host has no GPU, set `LLAMA_N_GPU_LAYERS=0`.
 
 ### Backend is unhealthy
 
 Inspect:
 
-\`\`\`bash
+```bash
 docker compose logs backend
-\`\`\`
+```
 
-The first backend start may take time because it downloads \`ggml-small.bin\` and initializes the Python dependencies/model cache.
+The first backend start may take time because it downloads `ggml-small.bin` and initializes the Python dependencies/model cache.
 
 ### Frontend loads but API calls fail
 
 Confirm:
 
-\`\`\`bash
+```bash
 docker compose ps
 curl http://localhost:8000/health
 curl http://localhost:5173/health
-\`\`\`
+```
 
-The Nginx container must be running and its upstream service must be named \`backend\`.
+The Nginx container must be running and its upstream service must be named `backend`.
 
 ### Reset only application data
 
@@ -458,7 +498,7 @@ Stop the stack, then remove the host data directory contents you no longer need.
 
 ## Repository structure
 
-\`\`\`
+```
 CharchaNotes/
   ai/                  Whisper, diarization, alignment, summarization pipeline
   api/                 FastAPI application and routes
@@ -470,7 +510,7 @@ CharchaNotes/
   Dockerfile.frontend  Vite build + Nginx image
   docker-compose.yml   llama.cpp, backend, and frontend services
   docker-setup.sh      HF token prompt and Docker startup helper
-\`\`\`
+```
 
 ## License
 
