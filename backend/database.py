@@ -43,6 +43,7 @@ def initialize_database():
             audio_path TEXT,
             transcript_path TEXT,
             speaker_transcript_path TEXT,
+            speaker_names TEXT NOT NULL DEFAULT '{}',
             summary_path TEXT,
             status TEXT NOT NULL,
             duration REAL,
@@ -59,6 +60,11 @@ def initialize_database():
     if "speaker_transcript_path" not in columns:
         connection.execute(
             "ALTER TABLE meetings ADD COLUMN speaker_transcript_path TEXT"
+        )
+
+    if "speaker_names" not in columns:
+        connection.execute(
+            "ALTER TABLE meetings ADD COLUMN speaker_names TEXT NOT NULL DEFAULT '{}'"
         )
 
     connection.commit()

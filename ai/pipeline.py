@@ -886,7 +886,7 @@ def main():
 
     print()
     print("=" * 70)
-    print("MEETING SUMMARIZER")
+    print("CHARCHANOTES")
     print("=" * 70)
 
     print()

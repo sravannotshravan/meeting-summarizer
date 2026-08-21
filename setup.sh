@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Meeting Summarizer - Local Environment Setup Script
+# CharchaNotes - Local Environment Setup Script
 # ==============================================================================
 set -e
 
@@ -13,7 +13,7 @@ BOLD="\033[1m"
 NC="\033[0m"
 
 echo -e "${BOLD}${BLUE}======================================================${NC}"
-echo -e "${BOLD}${BLUE}   Meeting Summarizer - Setup & Dependency Installer  ${NC}"
+echo -e "${BOLD}${BLUE}   CharchaNotes - Setup & Dependency Installer  ${NC}"
 echo -e "${BOLD}${BLUE}======================================================${NC}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

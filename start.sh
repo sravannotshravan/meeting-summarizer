@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Meeting Summarizer - Startup & Service Runner Script
+# CharchaNotes - Startup & Service Runner Script
 # ==============================================================================
 set -e
 
@@ -17,7 +17,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 echo -e "${BOLD}${CYAN}======================================================${NC}"
-echo -e "${BOLD}${CYAN}            Starting Meeting Summarizer Stack         ${NC}"
+echo -e "${BOLD}${CYAN}            Starting CharchaNotes Stack         ${NC}"
 echo -e "${BOLD}${CYAN}======================================================${NC}"
 
 # Check if setup has been executed
@@ -139,7 +139,7 @@ echo -e "      Frontend dev server started (PID: $FRONTEND_PID, log: frontend.lo
 sleep 2
 
 echo -e "\n${BOLD}${GREEN}======================================================${NC}"
-echo -e "${BOLD}${GREEN}   Meeting Summarizer Stack is Running!               ${NC}"
+echo -e "${BOLD}${GREEN}   CharchaNotes Stack is Running!               ${NC}"
 echo -e "${BOLD}${GREEN}======================================================${NC}"
 echo -e "  🌐 ${BOLD}Web UI:${NC}        ${CYAN}http://localhost:${FRONTEND_PORT}${NC}"
 echo -e "  🔌 ${BOLD}Backend API:${NC}   ${CYAN}http://localhost:${BACKEND_PORT}${NC}"

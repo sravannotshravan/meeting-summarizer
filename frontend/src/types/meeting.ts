@@ -5,6 +5,7 @@ export interface Meeting {
   audio_path: string | null;
   transcript_path: string | null;
   speaker_transcript_path: string | null;
+  speaker_names: Record<string, string>;
   summary_path: string | null;
   status: string;
   duration: number | null;
@@ -28,6 +29,7 @@ export interface Transcript {
 export interface SpeakerTranscriptSegment
   extends TranscriptSegment {
   speaker: string;
+  speaker_label?: string;
 }
 
 export interface SpeakerTranscript {

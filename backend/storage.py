@@ -1,3 +1,4 @@
+import json
 import shutil
 import uuid
 from datetime import datetime, timezone
@@ -56,6 +57,8 @@ def create_meeting(
 
         speaker_transcript_path=None,
 
+        speaker_names={},
+
         summary_path=None,
 
         status="uploaded",
@@ -80,6 +83,7 @@ def create_meeting(
             audio_path,
             transcript_path,
             speaker_transcript_path,
+            speaker_names,
             summary_path,
             status,
             duration,
@@ -87,7 +91,7 @@ def create_meeting(
             created_at,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             meeting.id,
@@ -96,6 +100,7 @@ def create_meeting(
             meeting.audio_path,
             meeting.transcript_path,
             meeting.speaker_transcript_path,
+            json.dumps(meeting.speaker_names),
             meeting.summary_path,
             meeting.status,
             meeting.duration,
@@ -138,6 +143,7 @@ def get_meeting(
         audio_path=row["audio_path"],
         transcript_path=row["transcript_path"],
         speaker_transcript_path=row["speaker_transcript_path"],
+        speaker_names=json.loads(row["speaker_names"] or "{}"),
         summary_path=row["summary_path"],
         status=row["status"],
         duration=row["duration"],
@@ -162,6 +168,7 @@ def update_meeting(
         "audio_path",
         "transcript_path",
         "speaker_transcript_path",
+        "speaker_names",
         "summary_path",
         "status",
         "duration",
@@ -182,9 +189,10 @@ def update_meeting(
         for field in fields
     )
 
-    values = list(
-        fields.values()
-    )
+    if "speaker_names" in fields:
+        fields["speaker_names"] = json.dumps(fields["speaker_names"])
+
+    values = list(fields.values())
 
     values.append(
         meeting_id

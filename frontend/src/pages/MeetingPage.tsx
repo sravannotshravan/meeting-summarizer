@@ -5,6 +5,10 @@ import {
   ChevronRight,
   Clock,
   FileAudio,
+  Pencil,
+  RotateCcw,
+  Save,
+  Trash2,
   ListChecks,
   LoaderCircle,
   MessageSquareText,
@@ -13,7 +17,15 @@ import {
 } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 
-import { getMeeting, getSpeakerTranscript, getSummary, API_BASE_URL } from "../lib/api";
+import {
+  deleteMeeting,
+  getMeeting,
+  getSpeakerTranscript,
+  getSummary,
+  retryMeeting,
+  updateSpeakerNames,
+  API_BASE_URL,
+} from "../lib/api";
 import type {
   Meeting,
   SpeakerTranscript,
@@ -93,6 +105,11 @@ export default function MeetingPage() {
   const [meeting, setMeeting] = useState<Meeting | null>(null);
   const [transcript, setTranscript] = useState<SpeakerTranscript | null>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
+  const [speakerNames, setSpeakerNames] = useState<Record<string, string>>({});
+  const [editingSpeakers, setEditingSpeakers] = useState(false);
+  const [savingSpeakers, setSavingSpeakers] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [speakerSaveMessage, setSpeakerSaveMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -117,6 +134,7 @@ export default function MeetingPage() {
 
         const meetingData = await getMeeting(id);
         setMeeting(meetingData);
+        setSpeakerNames(meetingData.speaker_names ?? {});
 
         // If completed or transcribed, fetch transcript & summary
         const [transcriptResult, summaryResult] = await Promise.allSettled([
@@ -246,6 +264,47 @@ export default function MeetingPage() {
     }
   };
 
+  const handleDelete = async () => {
+    if (!id || !window.confirm("Delete this meeting and all of its files?")) return;
+
+    try {
+      setActionError(null);
+      await deleteMeeting(id);
+      navigate("/");
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Unable to delete meeting.");
+    }
+  };
+
+  const handleRetry = async () => {
+    if (!id) return;
+
+    try {
+      setActionError(null);
+      await retryMeeting(id);
+      await fetchMeetingData(false);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Unable to retry meeting.");
+    }
+  };
+
+  const handleSaveSpeakers = async () => {
+    if (!id) return;
+
+    try {
+      setSavingSpeakers(true);
+      setActionError(null);
+      setSpeakerSaveMessage(null);
+      const result = await updateSpeakerNames(id, speakerNames);
+      setSpeakerNames(result.speaker_names);
+      setSpeakerSaveMessage("Labels saved");
+      setEditingSpeakers(false);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Unable to save speaker names.");
+    } finally {
+      setSavingSpeakers(false);
+    }
+  };
   // ── Loading / Error states ──────────────────────────────
 
   if (loading) {
@@ -270,6 +329,7 @@ export default function MeetingPage() {
   // ── Render helpers ──────────────────────────────────────
 
   const segments: SpeakerTranscriptSegment[] = transcript?.segments ?? [];
+  const speakers = Array.from(new Set(segments.map((segment) => segment.speaker)));
   const isProcessing =
     meeting.status !== "completed" && meeting.status !== "failed";
 
@@ -327,7 +387,7 @@ export default function MeetingPage() {
                   className="segment-speaker"
                   style={{ color }}
                 >
-                  {speakerLabel(segment.speaker)}
+                  {speakerNames[segment.speaker] || segment.speaker_label || speakerLabel(segment.speaker)}
                 </span>
 
                 <span className="segment-text">{segment.text}</span>
@@ -466,8 +526,21 @@ export default function MeetingPage() {
           </div>
         </div>
 
+        <div className="meeting-actions">
+          {meeting.status === "failed" && (
+            <button className="meeting-action retry-action" onClick={handleRetry}>
+              <RotateCcw size={14} />
+              Retry pipeline
+            </button>
+          )}
+          <button className="meeting-action delete-action" onClick={handleDelete}>
+            <Trash2 size={14} />
+            Delete
+          </button>
+        </div>
+
         <div
-          className={`meeting-status ${isProcessing ? "processing" : "completed"}`}
+          className={"meeting-status " + (isProcessing ? "processing" : "completed")}
         >
           <span
             className={`status-dot ${isProcessing ? "pulse" : ""}`}
@@ -510,6 +583,57 @@ export default function MeetingPage() {
                 </span>
               )}
             </div>
+
+            {actionError && <div className="meeting-action-error">{actionError}</div>}
+
+            {transcript && speakers.length > 0 && (
+              <div className="speaker-tools">
+                <div className="speaker-tools-heading">
+                  <span>Speaker names</span>
+                  {!editingSpeakers ? (
+                    <button className="text-action" onClick={() => setEditingSpeakers(true)}>
+                      <Pencil size={12} />
+                      Rename
+                    </button>
+                  ) : (
+                    <div className="speaker-tool-actions">
+                      <button className="text-action" onClick={() => setEditingSpeakers(false)}>
+                        Cancel
+                      </button>
+                      <button className="text-action save-action" onClick={handleSaveSpeakers} disabled={savingSpeakers}>
+                        <Save size={12} />
+                        {savingSpeakers ? "Saving..." : "Save labels"}
+                      </button>
+                    </div>
+                  )}
+                </div>
+                {speakerSaveMessage && <span className="speaker-save-message">{speakerSaveMessage}</span>}
+                <div className="speaker-list">
+                  {speakers.map((speaker) => (
+                    <label className="speaker-row" key={speaker}>
+                      <span style={{ color: getSpeakerColor(speaker, speakerColorMap.current) }}>
+                        {speakerLabel(speaker)}
+                      </span>
+                      {editingSpeakers ? (
+                        <input
+                          value={speakerNames[speaker] ?? ""}
+                          placeholder={speakerLabel(speaker)}
+                          onChange={(event) => {
+                            setSpeakerSaveMessage(null);
+                            setSpeakerNames((current) => ({
+                              ...current,
+                              [speaker]: event.target.value,
+                            }))
+                          }}
+                        />
+                      ) : (
+                        <strong>{speakerNames[speaker] || "Unnamed"}</strong>
+                      )}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {renderTranscript()}
           </div>

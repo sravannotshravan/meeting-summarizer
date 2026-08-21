@@ -1,4 +1,4 @@
-# MeetingAI
+# CharchaNotes
 
 A fully local, privacy-first AI meeting summarizer. Upload an audio or video recording and get back a speaker-aware transcript with Spotify lyrics-style playback and a structured AI summary — all processed on your own machine with no cloud APIs.
 

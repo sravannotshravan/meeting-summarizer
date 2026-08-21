@@ -4,7 +4,7 @@ services:
   # ============================================================
   llama-server:
     image: ghcr.io/ggml-org/llama.cpp:server
-    container_name: meetingai-llama-server
+    container_name: charchanotes-llama-server
     restart: unless-stopped
     ports:
       - "${LLAMA_PORT:-8080}:8080"
@@ -36,7 +36,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.backend
-    container_name: meetingai-backend
+    container_name: charchanotes-backend
     restart: unless-stopped
     depends_on:
       llama-server:
@@ -67,7 +67,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.frontend
-    container_name: meetingai-frontend
+    container_name: charchanotes-frontend
     restart: unless-stopped
     depends_on:
       backend:
@@ -77,4 +77,4 @@ services:
 
 volumes:
   hf-cache:
-    name: meetingai-hf-cache
+    name: charchanotes-hf-cache

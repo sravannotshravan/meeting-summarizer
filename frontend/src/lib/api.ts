@@ -93,3 +93,34 @@ export async function uploadMeeting(
 
   return response.json();
 }
+export async function deleteMeeting(id: string): Promise<void> {
+  const response = await fetch(API_BASE_URL + "/meetings/" + id, {
+    method: "DELETE",
+  });
+
+  if (!response.ok) {
+    throw new Error("Delete failed (" + response.status + ")");
+  }
+}
+
+export async function retryMeeting(
+  id: string,
+): Promise<{ id: string; status: string }> {
+  return request<{ id: string; status: string }>(
+    "/meetings/" + id + "/retry",
+    { method: "POST" },
+  );
+}
+
+export async function updateSpeakerNames(
+  id: string,
+  names: Record<string, string>,
+): Promise<{ speaker_names: Record<string, string> }> {
+  return request<{ speaker_names: Record<string, string> }>(
+    "/meetings/" + id + "/speakers",
+    {
+      method: "PUT",
+      body: JSON.stringify({ names }),
+    },
+  );
+}

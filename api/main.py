@@ -40,7 +40,7 @@ MEETINGS_DIR = (
 
 
 app = FastAPI(
-    title="Meeting Summarizer API",
+    title="CharchaNotes API",
     description="Local AI meeting transcription and summarization API",
     version="0.1.0",
 )
@@ -295,7 +295,7 @@ def get_meeting(
             detail="Meeting not found"
         )
 
-    return dict(row)
+    return meeting_row_dict(row)
 
 
 # ============================================================
@@ -586,4 +586,3 @@ def delete_meeting(
         "message": "Meeting deleted",
         "id": meeting_id
     }
-

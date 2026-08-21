@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import {
+  Check,
+  CheckSquare,
   FileAudio,
   Home,
   LoaderCircle,
@@ -8,11 +10,13 @@ import {
   Search,
   Settings,
   Sparkles,
+  Trash2,
+  X,
 } from "lucide-react";
 
 import "./App.css";
 
-import { getMeetings } from "./lib/api";
+import { deleteMeeting, getMeetings } from "./lib/api";
 import type { Meeting } from "./types/meeting";
 import { useNavigate } from "react-router-dom";
 import NewMeetingModal from "./components/NewMeetingModal";
@@ -45,6 +49,10 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   useEffect(() => {
     async function loadMeetings() {
@@ -56,7 +64,7 @@ function App() {
         setMeetings(data);
       } catch (err) {
         console.error(err);
-        setError("Unable to connect to the MeetingAI backend.");
+        setError("Unable to connect to the CharchaNotes backend.");
       } finally {
         setLoading(false);
       }
@@ -87,7 +95,53 @@ function App() {
   const handleMeetingCreated = (newMeetingId: string) => {
     setIsModalOpen(false);
     navigate(`/meetings/${newMeetingId}`);
+  };  const toggleSelection = (meetingId: string) => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(meetingId)) next.delete(meetingId);
+      else next.add(meetingId);
+      return next;
+    });
   };
+
+  const selectVisibleMeetings = () => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      filteredMeetings.forEach((meeting) => next.add(meeting.id));
+      return next;
+    });
+  };
+
+  const clearSelection = () => {
+    setSelectedIds(new Set());
+    setIsSelectionMode(false);
+    setDeleteError(null);
+  };
+
+  const handleDeleteSelected = async () => {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0 || isDeleting) return;
+
+    const noun = ids.length === 1 ? "meeting" : "meetings";
+    if (!window.confirm("Delete " + ids.length + " " + noun + " and all of their files?")) return;
+
+    try {
+      setIsDeleting(true);
+      setDeleteError(null);
+      await Promise.all(ids.map((id) => deleteMeeting(id)));
+      setMeetings((current) =>
+        current.filter((meeting) => !selectedIds.has(meeting.id)),
+      );
+      clearSelection();
+    } catch (err) {
+      setDeleteError(
+        err instanceof Error ? err.message : "Unable to delete the selected meetings.",
+      );
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
 
   return (
     <div className="app">
@@ -102,7 +156,7 @@ function App() {
           <div className="brand-icon">
             <Sparkles size={18} />
           </div>
-          <span>MeetingAI</span>
+          <span>CharchaNotes</span>
         </div>
 
         <button
@@ -238,19 +292,43 @@ function App() {
             <div className="section-heading">
               <h2>
                 {searchQuery.trim()
-                  ? `Search results (${filteredMeetings.length})`
+                  ? "Search results (" + filteredMeetings.length + ")"
                   : "Recent meetings"}
               </h2>
 
-              {searchQuery.trim() && (
-                <button
-                  className="filter-button"
-                  onClick={() => setSearchQuery("")}
-                >
-                  Clear search
-                </button>
-              )}
+              <div className="meeting-selection-actions">
+                {isSelectionMode ? (
+                  <>
+                    <span className="selection-count">{selectedIds.size} selected</span>
+                    <button className="selection-button" onClick={selectVisibleMeetings} disabled={filteredMeetings.length === 0}>
+                      <CheckSquare size={14} />
+                      Select visible
+                    </button>
+                    <button className="bulk-delete-button" onClick={handleDeleteSelected} disabled={selectedIds.size === 0 || isDeleting}>
+                      <Trash2 size={14} />
+                      {isDeleting ? "Deleting..." : "Delete selected"}
+                    </button>
+                    <button className="selection-button" onClick={clearSelection}>
+                      <X size={14} />
+                      Cancel
+                    </button>
+                  </>
+                ) : (
+                  <button className="selection-button" onClick={() => setIsSelectionMode(true)}>
+                    <CheckSquare size={14} />
+                    Select
+                  </button>
+                )}
+
+                {searchQuery.trim() && (
+                  <button className="filter-button" onClick={() => setSearchQuery("")}>
+                    Clear search
+                  </button>
+                )}
+              </div>
             </div>
+
+            {deleteError && <div className="bulk-delete-error">{deleteError}</div>}
 
             {loading && (
               <div className="empty-state">
@@ -303,11 +381,24 @@ function App() {
               <div className="meeting-grid">
                 {filteredMeetings.map((meeting) => (
                   <article
-                    className="meeting-card"
+                    className={"meeting-card " + (selectedIds.has(meeting.id) ? "selected" : "")}
                     key={meeting.id}
                     onClick={() => navigate(`/meetings/${meeting.id}`)}
                     style={{ cursor: "pointer" }}
                   >
+                    {isSelectionMode && (
+                      <button
+                        className={"meeting-select-checkbox " + (selectedIds.has(meeting.id) ? "checked" : "")}
+                        aria-label={"Select " + meeting.title}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          toggleSelection(meeting.id);
+                        }}
+                      >
+                        {selectedIds.has(meeting.id) ? <Check size={14} /> : null}
+                      </button>
+                    )}
+
                     <div className="card-icon">
                       <FileAudio size={22} />
                     </div>

@@ -17,6 +17,8 @@ class Meeting:
 
     speaker_transcript_path: Optional[str]
 
+    speaker_names: dict[str, str]
+
     summary_path: Optional[str]
 
     status: str
