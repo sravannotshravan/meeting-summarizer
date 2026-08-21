@@ -23,6 +23,7 @@ import {
   getSpeakerTranscript,
   getSummary,
   retryMeeting,
+  renameMeeting,
   updateSpeakerNames,
   API_BASE_URL,
 } from "../lib/api";
@@ -518,7 +519,28 @@ export default function MeetingPage() {
           </div>
 
           <div>
-            <h1>{meeting.title}</h1>
+            <div className="meeting-title-line">
+              <h1>{meeting.title}</h1>
+              <button
+                className="meeting-title-edit-button"
+                onClick={async () => {
+                  const nextTitle = window.prompt("Rename meeting", meeting.title);
+                  if (!id || nextTitle === null || !nextTitle.trim()) return;
+                  try {
+                    const result = await renameMeeting(id, nextTitle);
+                    setMeeting((current) => current ? { ...current, title: result.title } : current);
+                    window.dispatchEvent(new CustomEvent("meeting-renamed", { detail: result }));
+                  } catch (err) {
+                    setActionError(err instanceof Error ? err.message : "Unable to rename meeting.");
+                  }
+                }}
+                aria-label="Rename meeting"
+              >
+                <Pencil size={13} />
+                Rename
+              </button>
+            </div>
+
 
             <p>
               {meeting.original_filename} · {formatDate(meeting.created_at)}

@@ -820,6 +820,37 @@ def process_existing_meeting(
 
 
 # ============================================================
+
+def retry_meeting(
+    meeting_id: str,
+    audio_path: Path,
+):
+    """Run the complete pipeline again, starting from the recording."""
+
+    meeting_dir = MEETINGS_DIR / meeting_id
+
+    for filename in (
+        "transcript.json",
+        "transcript.srt",
+        "speaker_transcript.json",
+        "diarization.json",
+        "summary.json",
+    ):
+        output_path = meeting_dir / filename
+        if output_path.exists():
+            output_path.unlink()
+
+    update_meeting(
+        meeting_id,
+        transcript_path=None,
+        speaker_transcript_path=None,
+        summary_path=None,
+        duration=None,
+        language=None,
+        status="queued",
+    )
+
+    return process_existing_meeting(meeting_id, audio_path)
 # Main pipeline
 # ============================================================
 

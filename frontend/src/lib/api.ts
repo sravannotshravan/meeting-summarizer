@@ -103,6 +103,19 @@ export async function deleteMeeting(id: string): Promise<void> {
   }
 }
 
+export async function renameMeeting(
+  id: string,
+  title: string,
+): Promise<{ id: string; title: string }> {
+  return request<{ id: string; title: string }>(
+    "/meetings/" + id,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ title }),
+    },
+  );
+}
+
 export async function retryMeeting(
   id: string,
 ): Promise<{ id: string; status: string }> {

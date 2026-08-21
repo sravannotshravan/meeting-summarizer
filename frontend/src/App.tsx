@@ -3,7 +3,7 @@ import {
   Check,
   CheckSquare,
   FileAudio,
-  Home,
+
   LoaderCircle,
   Mic,
   Plus,
@@ -166,20 +166,7 @@ function App() {
           <Plus size={18} />
           New meeting
         </button>
-
-        <nav className="nav">
-          <a className="nav-item active" href="/">
-            <Home size={18} />
-            Meetings
-          </a>
-
-          <a className="nav-item" href="/">
-            <FileAudio size={18} />
-            Recordings
-          </a>
-        </nav>
-
-        <div className="sidebar-section">
+<div className="sidebar-section">
           <div className="section-label">Recent</div>
 
           {meetings.slice(0, 5).map((meeting) => (
@@ -201,11 +188,13 @@ function App() {
           ))}
         </div>
 
-        <div className="sidebar-bottom">
-          <a className="nav-item">
+        <div className="sidebar-bottom">          <button
+            className="nav-item settings-nav-item"
+            onClick={() => navigate("/settings")}
+          >
             <Settings size={18} />
             Settings
-          </a>
+          </button>
         </div>
       </aside>
 

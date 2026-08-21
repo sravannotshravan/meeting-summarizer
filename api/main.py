@@ -17,9 +17,11 @@ from backend.storage import (
 
 from ai.pipeline import (
     process_existing_meeting,
+    retry_meeting,
 )
 from pathlib import Path
 import json
+from pydantic import BaseModel, Field
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
@@ -65,6 +67,19 @@ executor = ThreadPoolExecutor(
     max_workers=1
 )
 
+class SpeakerNamesUpdate(BaseModel):
+    names: dict[str, str] = Field(default_factory=dict)
+
+
+class MeetingTitleUpdate(BaseModel):
+    title: str
+
+
+def meeting_row_dict(row):
+    result = dict(row)
+    result["speaker_names"] = json.loads(result.get("speaker_names") or "{}")
+    return result
+
 @app.on_event("startup")
 def startup():
 
@@ -102,10 +117,25 @@ def list_meetings():
 
     connection.close()
 
-    return [
-        dict(row)
-        for row in rows
-    ]
+    return [meeting_row_dict(row) for row in rows]
+
+@app.patch("/meetings/{meeting_id}")
+def rename_meeting(meeting_id: str, payload: MeetingTitleUpdate):
+    title = payload.title.strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Meeting title cannot be empty")
+
+    connection = get_connection()
+    row = connection.execute(
+        "SELECT id FROM meetings WHERE id = ?", (meeting_id,)
+    ).fetchone()
+    connection.close()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+
+    update_meeting(meeting_id, title=title)
+    return {"id": meeting_id, "title": title}
 
 @app.post("/meetings", status_code=202)
 async def upload_meeting(
@@ -252,6 +282,7 @@ async def upload_meeting(
     background_tasks.add_task(
         executor.submit,
         process_existing_meeting,
+    retry_meeting,
         meeting_id,
         audio_path
     )
@@ -299,6 +330,29 @@ def get_meeting(
 
 
 # ============================================================
+
+@app.post("/meetings/{meeting_id}/retry", status_code=202)
+def retry_failed_meeting(meeting_id: str):
+    connection = get_connection()
+    row = connection.execute(
+        "SELECT audio_path, status FROM meetings WHERE id = ?",
+        (meeting_id,),
+    ).fetchone()
+    connection.close()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+    if row["status"] != "failed":
+        raise HTTPException(status_code=409, detail="Only failed meetings can be retried")
+    if not row["audio_path"]:
+        raise HTTPException(status_code=400, detail="Recording not available")
+
+    audio_path = (PROJECT_ROOT / row["audio_path"]).resolve()
+    if PROJECT_ROOT not in audio_path.parents or not audio_path.exists():
+        raise HTTPException(status_code=404, detail="Recording file not found")
+
+    executor.submit(retry_meeting, meeting_id, audio_path)
+    return {"id": meeting_id, "status": "queued"}
 # Get transcript
 # ============================================================
 
@@ -415,6 +469,38 @@ def get_speaker_transcript(
 
 
 # ============================================================
+
+@app.put("/meetings/{meeting_id}/speakers")
+def update_speaker_names(meeting_id: str, payload: SpeakerNamesUpdate):
+    connection = get_connection()
+    row = connection.execute(
+        "SELECT speaker_transcript_path FROM meetings WHERE id = ?",
+        (meeting_id,),
+    ).fetchone()
+    connection.close()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+
+    names = {
+        key.strip(): value.strip()
+        for key, value in payload.names.items()
+        if key.strip() and value.strip()
+    }
+    update_meeting(meeting_id, speaker_names=names)
+
+    if row["speaker_transcript_path"]:
+        transcript_path = PROJECT_ROOT / row["speaker_transcript_path"]
+        if transcript_path.exists():
+            with transcript_path.open("r", encoding="utf-8") as file:
+                transcript = json.load(file)
+            for segment in transcript.get("segments", []):
+                speaker = segment.get("speaker", "UNKNOWN")
+                segment["speaker_label"] = names.get(speaker, speaker)
+            with transcript_path.open("w", encoding="utf-8") as file:
+                json.dump(transcript, file, indent=2, ensure_ascii=False)
+
+    return {"speaker_names": names}
 # Get summary
 # ============================================================
 
