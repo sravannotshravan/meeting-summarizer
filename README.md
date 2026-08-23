@@ -4,6 +4,9 @@ CharchaNotes is a local-first meeting transcription and notes application. It ac
 
 No meeting audio, transcript, or summary is sent to a hosted AI API. The application runs FastAPI, whisper.cpp, pyannote, llama.cpp, and React locally or in Docker.
 
+<img width="1794" height="940" alt="image" src="https://github.com/user-attachments/assets/2e29401f-28e6-42ef-951c-ba5f6c95ad2c" />
+
+
 ## What CharchaNotes does
 
 - Uploads MP3, MP4, M4A, WAV, WebM, OGG, and FLAC recordings.
