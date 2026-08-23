@@ -3,6 +3,8 @@ import os
 import time
 from pathlib import Path
 
+import numpy as np
+import soundfile as sf
 import torch
 from pyannote.audio import Pipeline
 
@@ -10,17 +12,55 @@ from pyannote.audio import Pipeline
 MODEL = "pyannote/speaker-diarization-community-1"
 
 
+def load_audio_for_pyannote(
+    audio_path: Path,
+) -> dict:
+    """
+    Load audio with soundfile instead of TorchCodec.
+
+    Pyannote accepts preloaded audio in this format:
+    {
+        "waveform": Tensor[channel, time],
+        "sample_rate": int,
+    }
+    """
+
+    waveform, sample_rate = sf.read(
+        str(audio_path),
+        dtype="float32",
+        always_2d=True,
+    )
+
+    if waveform.size == 0:
+        raise RuntimeError(
+            f"Audio file is empty: {audio_path}"
+        )
+
+    waveform = np.asarray(
+        waveform,
+        dtype=np.float32,
+    )
+
+    # soundfile returns [time, channels].
+    # Pyannote expects [channels, time].
+    waveform_tensor = torch.from_numpy(
+        waveform.T.copy()
+    )
+
+    return {
+        "waveform": waveform_tensor,
+        "sample_rate": int(sample_rate),
+    }
+
+
 def diarize(
     audio_path: Path,
 ) -> tuple[list[dict], float]:
     """
-    Run speaker diarization on an audio file.
+    Run speaker diarization.
 
-    CUDA is used when available. CPU is used only as a fallback.
-
-    Returns:
-        segments: Speaker segments with start, end, and speaker.
-        elapsed: Processing time in seconds.
+    CUDA is used when available.
+    CPU is used only as a fallback.
     """
 
     audio_path = (
@@ -48,11 +88,28 @@ def diarize(
         device = torch.device("cuda:0")
 
         print(f"CUDA version: {torch.version.cuda}")
-        print(f"GPU: {torch.cuda.get_device_name(0)}")
+        print(
+            f"GPU: "
+            f"{torch.cuda.get_device_name(0)}"
+        )
         print("Diarization device: CUDA")
     else:
         device = torch.device("cpu")
         print("Diarization device: CPU fallback")
+
+    print("\nLoading audio into memory...")
+
+    audio = load_audio_for_pyannote(audio_path)
+
+    print(
+        f"Sample rate: {audio['sample_rate']}"
+    )
+    print(
+        f"Channels: {audio['waveform'].shape[0]}"
+    )
+    print(
+        f"Samples: {audio['waveform'].shape[1]}"
+    )
 
     print("\nLoading pyannote pipeline...")
 
@@ -73,7 +130,6 @@ def diarize(
             f"Failed to load pyannote pipeline: {MODEL}"
         )
 
-    # Move every pyannote model component to CUDA.
     pipeline.to(device)
 
     if device.type == "cuda":
@@ -84,21 +140,24 @@ def diarize(
 
     start = time.perf_counter()
 
-    output = pipeline(str(audio_path))
+    # Passing the preloaded dictionary bypasses TorchCodec.
+    output = pipeline(audio)
 
     elapsed = time.perf_counter() - start
 
     print(
-        f"\nDiarization completed in {elapsed:.2f} seconds"
+        f"\nDiarization completed in "
+        f"{elapsed:.2f} seconds"
     )
 
-    # Community-1 provides exclusive speaker diarization.
-    diarization = output.exclusive_speaker_diarization
+    diarization = (
+        output.exclusive_speaker_diarization
+    )
 
     segments: list[dict] = []
 
-    for turn, speaker in diarization.itertracks(
-        yield_label=True
+    for turn,_, speaker in diarization.itertracks(
+        yield_label=True,
     ):
         segments.append(
             {
@@ -119,9 +178,18 @@ def diarize(
     print("=" * 70)
     print("DIARIZATION RESULT")
     print("=" * 70)
-    print(f"Speakers detected: {len(speakers)}")
-    print(f"Speaker labels: {', '.join(speakers)}")
-    print(f"Segments: {len(segments)}")
+    print(
+        f"Speakers detected: "
+        f"{len(speakers)}"
+    )
+    print(
+        f"Speaker labels: "
+        f"{', '.join(speakers)}"
+    )
+    print(
+        f"Segments: "
+        f"{len(segments)}"
+    )
 
     if device.type == "cuda":
         torch.cuda.empty_cache()

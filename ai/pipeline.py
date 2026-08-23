@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -12,11 +13,7 @@ from ai.alignment import (
     load_whisper_segments,
     save_aligned_transcript,
 )
-from ai.diarization import (
-    diarize,
-    save_diarization,
-)
-
+from ai.diarization import diarize, save_diarization
 from backend.database import initialize_database
 from backend.storage import (
     create_meeting,
@@ -25,13 +22,8 @@ from backend.storage import (
 )
 
 
-# ============================================================
-# Paths
-# ============================================================
-
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-
-import os
+MEETINGS_DIR = PROJECT_ROOT / "data" / "meetings"
 
 WHISPER_CLI = Path(
     os.getenv(
@@ -42,7 +34,7 @@ WHISPER_CLI = Path(
             / "build"
             / "bin"
             / "whisper-cli"
-        )
+        ),
     )
 ).resolve()
 
@@ -54,21 +46,185 @@ WHISPER_MODEL = Path(
             / "whisper.cpp"
             / "models"
             / "ggml-small.bin"
-        )
+        ),
     )
 ).resolve()
 
 LLAMA_URL = os.getenv(
     "LLAMA_URL",
-    "http://127.0.0.1:8080/v1/chat/completions"
+    "http://127.0.0.1:8080/v1/chat/completions",
 )
 
-MEETINGS_DIR = PROJECT_ROOT / "data" / "meetings"
+LLAMA_MODEL = os.getenv(
+    "LLAMA_MODEL",
+    "Qwen3-8B",
+)
 
 
-# ============================================================
-# Speaker transcript pipeline
-# ============================================================
+SUMMARY_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "summary": {
+            "type": "string",
+        },
+        "key_points": {
+            "type": "array",
+            "items": {
+                "type": "string",
+            },
+        },
+        "decisions": {
+            "type": "array",
+            "items": {
+                "type": "string",
+            },
+        },
+        "action_items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "task": {
+                        "type": "string",
+                    },
+                    "assignee": {
+                        "type": "string",
+                    },
+                    "deadline": {
+                        "type": "string",
+                    },
+                },
+                "required": [
+                    "task",
+                    "assignee",
+                    "deadline",
+                ],
+            },
+        },
+    },
+    "required": [
+        "summary",
+        "key_points",
+        "decisions",
+        "action_items",
+    ],
+}
+
+
+def check_dependencies() -> None:
+    if not WHISPER_CLI.exists():
+        raise RuntimeError(
+            f"Whisper executable not found:\n{WHISPER_CLI}"
+        )
+
+    if not WHISPER_MODEL.exists():
+        raise RuntimeError(
+            f"Whisper model not found:\n{WHISPER_MODEL}"
+        )
+
+    if shutil.which("ffmpeg") is None:
+        raise RuntimeError(
+            "ffmpeg was not found. Install ffmpeg in the container."
+        )
+
+
+def prepare_audio(
+    meeting_id: str,
+    audio_path: Path,
+) -> Path:
+    """
+    Convert uploaded media to a Whisper and pyannote-compatible WAV.
+
+    The output is:
+    - 16 kHz
+    - mono
+    - signed 16-bit PCM
+    """
+
+    audio_path = Path(audio_path).expanduser().resolve()
+
+    if not audio_path.exists():
+        raise FileNotFoundError(
+            f"Audio file not found: {audio_path}"
+        )
+
+    meeting_dir = MEETINGS_DIR / meeting_id
+    meeting_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    normalized_path = (
+        meeting_dir / "audio_normalized.wav"
+    )
+
+    print()
+    print("=" * 70)
+    print("AUDIO NORMALIZATION")
+    print("=" * 70)
+    print(f"Input: {audio_path}")
+    print(f"Output: {normalized_path}")
+
+    command = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(audio_path),
+        "-vn",
+        "-ar",
+        "16000",
+        "-ac",
+        "1",
+        "-c:a",
+        "pcm_s16le",
+        str(normalized_path),
+    ]
+
+    result = subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    if (
+        result.returncode != 0
+        or not normalized_path.exists()
+        or normalized_path.stat().st_size == 0
+    ):
+        raise RuntimeError(
+            "ffmpeg could not decode the uploaded audio:\n"
+            f"{result.stderr[-4000:]}"
+        )
+
+    return normalized_path
+
+
+def store_recording(
+    meeting_id: str,
+    source_path: Path,
+) -> Path:
+    meeting_dir = MEETINGS_DIR / meeting_id
+
+    meeting_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    destination = (
+        meeting_dir
+        / f"recording{source_path.suffix.lower()}"
+    )
+
+    shutil.copy2(
+        source_path,
+        destination,
+    )
+
+    return destination
+
 
 def create_speaker_transcript(
     meeting_id: str,
@@ -76,20 +232,14 @@ def create_speaker_transcript(
     whisper_path: Path,
 ) -> Path:
     """
-    Run speaker diarization and align it with Whisper.
-
-    The resulting speaker-aware transcript is stored inside
-    the meeting's directory and linked in SQLite.
+    Run speaker diarization, align it with Whisper,
+    and save the speaker transcript.
     """
 
-    meeting_dir = (
-        MEETINGS_DIR
-        / meeting_id
-    )
+    meeting_dir = MEETINGS_DIR / meeting_id
 
     diarization_path = (
-        meeting_dir
-        / "diarization.json"
+        meeting_dir / "diarization.json"
     )
 
     aligned_temp_path = (
@@ -104,15 +254,11 @@ def create_speaker_transcript(
     print("SPEAKER-AWARE TRANSCRIPTION")
     print("=" * 70)
 
-    # --------------------------------------------------------
-    # Diarization
-    # --------------------------------------------------------
-
     print()
     print("Running speaker diarization...")
 
     diarization_segments, elapsed = diarize(
-        audio_path
+        audio_path,
     )
 
     save_diarization(
@@ -125,16 +271,12 @@ def create_speaker_transcript(
         f"{diarization_path}"
     )
 
-    # --------------------------------------------------------
-    # Whisper + diarization alignment
-    # --------------------------------------------------------
-
     print()
     print("Aligning Whisper transcript with speakers...")
 
     whisper_segments, language, duration = (
         load_whisper_segments(
-            whisper_path
+            whisper_path,
         )
     )
 
@@ -150,13 +292,11 @@ def create_speaker_transcript(
         duration,
     )
 
-    # --------------------------------------------------------
-    # Store speaker transcript
-    # --------------------------------------------------------
-
-    speaker_transcript_path = save_speaker_transcript(
-        meeting_id,
-        aligned_temp_path,
+    speaker_transcript_path = (
+        save_speaker_transcript(
+            meeting_id,
+            aligned_temp_path,
+        )
     )
 
     print(
@@ -167,173 +307,43 @@ def create_speaker_transcript(
     return speaker_transcript_path
 
 
-# ============================================================
-# JSON schema for Qwen
-# ============================================================
-
-SUMMARY_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {
-        "summary": {
-            "type": "string"
-        },
-        "key_points": {
-            "type": "array",
-            "items": {
-                "type": "string"
-            }
-        },
-        "decisions": {
-            "type": "array",
-            "items": {
-                "type": "string"
-            }
-        },
-        "action_items": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "task": {
-                        "type": "string"
-                    },
-                    "assignee": {
-                        "type": "string"
-                    },
-                    "deadline": {
-                        "type": "string"
-                    }
-                },
-                "required": [
-                    "task",
-                    "assignee",
-                    "deadline"
-                ]
-            }
-        }
-    },
-    "required": [
-        "summary",
-        "key_points",
-        "decisions",
-        "action_items"
-    ]
-}
-
-
-# ============================================================
-# Dependency checks
-# ============================================================
-
-def check_dependencies():
-
-    if not WHISPER_CLI.exists():
-        raise RuntimeError(
-            f"Whisper executable not found:\n"
-            f"{WHISPER_CLI}"
-        )
-
-    if not WHISPER_MODEL.exists():
-        raise RuntimeError(
-            f"Whisper model not found:\n"
-            f"{WHISPER_MODEL}"
-        )
-
-
-# ============================================================
-# Copy recording into meeting storage
-# ============================================================
-
-def store_recording(
-    meeting_id: str,
-    source_path: Path
-) -> Path:
-
-    meeting_dir = (
-        MEETINGS_DIR
-        / meeting_id
-    )
-
-    meeting_dir.mkdir(
-        parents=True,
-        exist_ok=True
-    )
-
-    destination = (
-        meeting_dir
-        / f"recording{source_path.suffix.lower()}"
-    )
-
-    shutil.copy2(
-        source_path,
-        destination
-    )
-
-    return destination
-
-
-# ============================================================
-# Run Whisper
-# ============================================================
-
 def transcribe(
     meeting_id: str,
-    audio_path: Path
+    audio_path: Path,
 ) -> Path:
+    meeting_dir = MEETINGS_DIR / meeting_id
 
-    meeting_dir = (
-        MEETINGS_DIR
-        / meeting_id
-    )
-
-    output_base = (
-        meeting_dir
-        / "transcript"
-    )
-
-    output_json = (
-        meeting_dir
-        / "transcript.json"
-    )
+    output_base = meeting_dir / "transcript"
+    output_json = meeting_dir / "transcript.json"
 
     command = [
         str(WHISPER_CLI),
-
         "-m",
         str(WHISPER_MODEL),
-
         "-f",
         str(audio_path),
-
         "-oj",
-
         "-of",
         str(output_base),
-
         "-l",
         "auto",
     ]
 
     print()
     print("=" * 70)
-    print("STEP 1/2 — TRANSCRIPTION")
+    print("STEP 1/2 - TRANSCRIPTION")
     print("=" * 70)
-
-    print()
     print(f"Audio: {audio_path}")
     print(f"Model: {WHISPER_MODEL}")
-    print()
 
     update_meeting(
         meeting_id,
-        status="transcribing"
+        status="transcribing",
     )
 
     result = subprocess.run(
         command,
-        check=False
+        check=False,
     )
 
     if result.returncode != 0:
@@ -344,65 +354,52 @@ def transcribe(
 
     if not output_json.exists():
         raise RuntimeError(
-            "Whisper finished but transcript "
-            f"was not found:\n{output_json}"
+            "Whisper finished but transcript was not found:\n"
+            f"{output_json}"
         )
 
     return output_json
 
 
-# ============================================================
-# Extract Whisper transcript
-# ============================================================
-
 def extract_transcript(
-    json_path: Path
+    json_path: Path,
 ) -> tuple[str, str | None, float | None]:
-
     with json_path.open(
         "r",
-        encoding="utf-8"
+        encoding="utf-8",
     ) as file:
-
         data = json.load(file)
 
-    transcription = data.get(
-        "transcription"
-    )
+    transcription = data.get("transcription")
 
-    if not isinstance(
-        transcription,
-        list
-    ):
+    if not isinstance(transcription, list):
         raise RuntimeError(
-            "Whisper JSON does not contain "
-            "a valid transcription array."
+            "Whisper JSON does not contain a valid "
+            "transcription array."
         )
 
-    lines = []
-
+    lines: list[str] = []
     end_ms = 0
 
     for segment in transcription:
-
         timestamps = segment.get(
             "timestamps",
-            {}
+            {},
         )
 
         offsets = segment.get(
             "offsets",
-            {}
+            {},
         )
 
         start = timestamps.get(
             "from",
-            "Unknown"
+            "Unknown",
         )
 
         text = segment.get(
             "text",
-            ""
+            "",
         ).strip()
 
         if not text:
@@ -412,22 +409,22 @@ def extract_transcript(
             f"[{start}] {text}"
         )
 
-        segment_end = offsets.get(
-            "to"
-        )
+        segment_end = offsets.get("to")
 
         if isinstance(
             segment_end,
-            (int, float)
+            (int, float),
         ):
             end_ms = max(
                 end_ms,
-                segment_end
+                segment_end,
             )
 
     language = (
-        data.get("result", {})
-        .get("language")
+        data.get(
+            "result",
+            {},
+        ).get("language")
     )
 
     duration = (
@@ -444,18 +441,11 @@ def extract_transcript(
     return (
         "\n".join(lines),
         language,
-        duration
+        duration,
     )
 
 
-# ============================================================
-# Qwen summarization
-# ============================================================
-
-def summarize(
-    transcript: str
-) -> dict:
-
+def summarize(transcript: str) -> dict:
     system_prompt = """
 You are a meeting analysis assistant.
 
@@ -494,243 +484,131 @@ Return the structured meeting analysis.
 """
 
     payload = {
-        "model": "Qwen3-8B",
-
+        "model": LLAMA_MODEL,
         "messages": [
             {
                 "role": "system",
-                "content": system_prompt.strip()
+                "content": system_prompt.strip(),
             },
             {
                 "role": "user",
-                "content": user_prompt.strip()
-            }
+                "content": user_prompt.strip(),
+            },
         ],
-
         "temperature": 0.1,
-
         "max_tokens": 1200,
-
         "chat_template_kwargs": {
-            "enable_thinking": False
+            "enable_thinking": False,
         },
-
         "response_format": {
             "type": "json_schema",
             "json_schema": {
                 "name": "meeting_summary",
-                "schema": SUMMARY_SCHEMA
-            }
-        }
+                "schema": SUMMARY_SCHEMA,
+            },
+        },
     }
 
     print()
     print("=" * 70)
-    print("STEP 2/2 — AI SUMMARIZATION")
+    print("STEP 2/2 - AI SUMMARIZATION")
     print("=" * 70)
-
-    print()
     print("Sending transcript to Qwen3...")
 
     try:
-
         response = requests.post(
             LLAMA_URL,
             json=payload,
-            timeout=300
+            timeout=300,
         )
-
-    except requests.exceptions.ConnectionError:
-
+    except requests.exceptions.ConnectionError as error:
         raise RuntimeError(
-            "\nCould not connect to llama-server.\n\n"
-            "Start it with:\n\n"
-            "~/llama.cpp/build/bin/llama-server "
-            "-hf Qwen/Qwen3-8B-GGUF:Q4_K_M "
-            "-ngl 99 "
-            "-c 8192 "
-            "--host 127.0.0.1 "
-            "--port 8080"
-        )
+            "Could not connect to llama-server."
+        ) from error
 
     response.raise_for_status()
 
     result = response.json()
 
     try:
-
         content = (
-            result["choices"][0]
-            ["message"]
-            ["content"]
+            result["choices"][0]["message"]["content"]
         )
-
     except (
         KeyError,
         IndexError,
-        TypeError
-    ):
-
+        TypeError,
+    ) as error:
         raise RuntimeError(
-            "Unexpected response from "
-            "llama-server:\n"
+            "Unexpected response from llama-server:\n"
             + json.dumps(
                 result,
-                indent=2
+                indent=2,
             )
-        )
+        ) from error
 
     if not content or not content.strip():
-
         raise RuntimeError(
             "Qwen returned empty content."
         )
 
     try:
-
-        return json.loads(
-            content
-        )
-
-    except json.JSONDecodeError:
-
+        return json.loads(content)
+    except json.JSONDecodeError as error:
         raise RuntimeError(
-            "Qwen returned invalid JSON:\n\n"
-            + content
-        )
+            "Qwen returned invalid JSON:\n"
+            f"{content}"
+        ) from error
 
-
-# ============================================================
-# Save summary
-# ============================================================
 
 def save_summary(
     meeting_id: str,
-    summary: dict
+    summary: dict,
 ) -> Path:
-
-    meeting_dir = (
-        MEETINGS_DIR
-        / meeting_id
-    )
-
-    summary_path = (
-        meeting_dir
-        / "summary.json"
-    )
+    meeting_dir = MEETINGS_DIR / meeting_id
+    summary_path = meeting_dir / "summary.json"
 
     with summary_path.open(
         "w",
-        encoding="utf-8"
+        encoding="utf-8",
     ) as file:
-
         json.dump(
             summary,
             file,
             indent=2,
-            ensure_ascii=False
+            ensure_ascii=False,
         )
 
     return summary_path
 
 
-# ============================================================
-# Pretty-print result
-# ============================================================
-
-def print_summary(
-    summary: dict
-):
-
-    print()
-    print()
-    print("=" * 70)
-    print("FINAL MEETING SUMMARY")
-    print("=" * 70)
-
-    print()
-    print(summary["summary"])
-
-    print()
-    print("KEY POINTS")
-    print("-" * 70)
-
-    for point in summary["key_points"]:
-        print(f"• {point}")
-
-    print()
-    print("DECISIONS")
-    print("-" * 70)
-
-    if summary["decisions"]:
-
-        for decision in summary["decisions"]:
-            print(f"• {decision}")
-
-    else:
-        print("None identified.")
-
-    print()
-    print("ACTION ITEMS")
-    print("-" * 70)
-
-    if summary["action_items"]:
-
-        for item in summary["action_items"]:
-
-            print(
-                f"• {item['task']}"
-            )
-
-            print(
-                f"  Assignee: "
-                f"{item['assignee']}"
-            )
-
-            print(
-                f"  Deadline: "
-                f"{item['deadline']}"
-            )
-
-            print()
-
-    else:
-        print("None identified.")
-
-    print("=" * 70)
-
 def process_existing_meeting(
     meeting_id: str,
-    audio_path: Path
+    audio_path: Path,
 ):
     """
-    Run the complete AI pipeline for an existing meeting.
-
-    The meeting record must already exist in SQLite.
+    Run the complete pipeline for an existing meeting.
     """
 
     try:
-        # ----------------------------------------------------
-        # Whisper
-        # ----------------------------------------------------
+        normalized_audio_path = prepare_audio(
+            meeting_id,
+            audio_path,
+        )
 
         transcript_path = transcribe(
             meeting_id,
-            audio_path
+            normalized_audio_path,
         )
 
         update_meeting(
             meeting_id,
             transcript_path=str(
                 transcript_path.relative_to(
-                    PROJECT_ROOT
+                    PROJECT_ROOT,
                 )
-            )
+            ),
         )
-
-        # ----------------------------------------------------
-        # Extract transcript
-        # ----------------------------------------------------
 
         print()
         print("Processing Whisper output...")
@@ -738,16 +616,16 @@ def process_existing_meeting(
         (
             transcript,
             language,
-            duration
+            duration,
         ) = extract_transcript(
-            transcript_path
+            transcript_path,
         )
 
         update_meeting(
             meeting_id,
             status="transcribed",
             language=language,
-            duration=duration
+            duration=duration,
         )
 
         print(
@@ -755,51 +633,37 @@ def process_existing_meeting(
             f"{len(transcript):,} characters"
         )
 
-        # ----------------------------------------------------
-        # Speaker diarization + alignment
-        # ----------------------------------------------------
-
         update_meeting(
             meeting_id,
-            status="diarizing"
+            status="diarizing",
         )
 
         create_speaker_transcript(
             meeting_id,
-            audio_path,
-            transcript_path
+            normalized_audio_path,
+            transcript_path,
         )
-
-        # ----------------------------------------------------
-        # Qwen
-        # ----------------------------------------------------
 
         update_meeting(
             meeting_id,
-            status="summarizing"
+            status="summarizing",
         )
 
-        summary = summarize(
-            transcript
-        )
-
-        # ----------------------------------------------------
-        # Save summary
-        # ----------------------------------------------------
+        summary = summarize(transcript)
 
         summary_path = save_summary(
             meeting_id,
-            summary
+            summary,
         )
 
         update_meeting(
             meeting_id,
             summary_path=str(
                 summary_path.relative_to(
-                    PROJECT_ROOT
+                    PROJECT_ROOT,
                 )
             ),
-            status="completed"
+            status="completed",
         )
 
         print()
@@ -810,22 +674,20 @@ def process_existing_meeting(
         return summary
 
     except Exception:
-
         update_meeting(
             meeting_id,
-            status="failed"
+            status="failed",
         )
-
         raise
 
-
-# ============================================================
 
 def retry_meeting(
     meeting_id: str,
     audio_path: Path,
 ):
-    """Run the complete pipeline again, starting from the recording."""
+    """
+    Remove previous artifacts and run the pipeline again.
+    """
 
     meeting_dir = MEETINGS_DIR / meeting_id
 
@@ -835,8 +697,10 @@ def retry_meeting(
         "speaker_transcript.json",
         "diarization.json",
         "summary.json",
+        "audio_normalized.wav",
     ):
         output_path = meeting_dir / filename
+
         if output_path.exists():
             output_path.unlink()
 
@@ -850,27 +714,69 @@ def retry_meeting(
         status="queued",
     )
 
-    return process_existing_meeting(meeting_id, audio_path)
-# Main pipeline
-# ============================================================
+    return process_existing_meeting(
+        meeting_id,
+        audio_path,
+    )
 
-def main():
 
+def print_summary(summary: dict) -> None:
+    print()
+    print("=" * 70)
+    print("FINAL MEETING SUMMARY")
+    print("=" * 70)
+
+    print()
+    print(summary["summary"])
+
+    print()
+    print("KEY POINTS")
+    print("-" * 70)
+
+    for point in summary["key_points"]:
+        print(f"- {point}")
+
+    print()
+    print("DECISIONS")
+    print("-" * 70)
+
+    if summary["decisions"]:
+        for decision in summary["decisions"]:
+            print(f"- {decision}")
+    else:
+        print("None identified.")
+
+    print()
+    print("ACTION ITEMS")
+    print("-" * 70)
+
+    if summary["action_items"]:
+        for item in summary["action_items"]:
+            print(f"- {item['task']}")
+            print(f"  Assignee: {item['assignee']}")
+            print(f"  Deadline: {item['deadline']}")
+    else:
+        print("None identified.")
+
+    print("=" * 70)
+
+
+def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Meeting transcription and "
             "AI summarization pipeline"
-        )
+        ),
     )
 
     parser.add_argument(
         "audio",
-        help="Path to meeting audio/video"
+        help="Path to meeting audio/video",
     )
 
     parser.add_argument(
         "--title",
-        help="Meeting title"
+        help="Meeting title",
     )
 
     args = parser.parse_args()
@@ -882,25 +788,14 @@ def main():
     )
 
     if not audio_path.exists():
-
         print(
             f"ERROR: Audio file does not exist:\n"
             f"{audio_path}"
         )
-
         sys.exit(1)
 
     check_dependencies()
-
-    # --------------------------------------------------------
-    # Initialize database
-    # --------------------------------------------------------
-
     initialize_database()
-
-    # --------------------------------------------------------
-    # Create meeting record
-    # --------------------------------------------------------
 
     title = (
         args.title
@@ -910,7 +805,7 @@ def main():
 
     meeting = create_meeting(
         title=title,
-        original_filename=audio_path.name
+        original_filename=audio_path.name,
     )
 
     meeting_id = meeting.id
@@ -919,188 +814,111 @@ def main():
     print("=" * 70)
     print("CHARCHANOTES")
     print("=" * 70)
-
-    print()
     print(f"Meeting ID: {meeting_id}")
     print(f"Title: {title}")
     print(f"Input: {audio_path}")
 
     try:
-
-        # ----------------------------------------------------
-        # Store recording
-        # ----------------------------------------------------
-
         stored_audio = store_recording(
             meeting_id,
-            audio_path
+            audio_path,
         )
 
         update_meeting(
             meeting_id,
             audio_path=str(
                 stored_audio.relative_to(
-                    PROJECT_ROOT
+                    PROJECT_ROOT,
                 )
-            )
+            ),
         )
 
-        print()
-        print(
-            f"Recording stored at:\n"
-            f"{stored_audio}"
+        normalized_audio_path = prepare_audio(
+            meeting_id,
+            stored_audio,
         )
-
-        # ----------------------------------------------------
-        # Whisper
-        # ----------------------------------------------------
 
         transcript_path = transcribe(
             meeting_id,
-            stored_audio
+            normalized_audio_path,
         )
 
         update_meeting(
             meeting_id,
             transcript_path=str(
                 transcript_path.relative_to(
-                    PROJECT_ROOT
+                    PROJECT_ROOT,
                 )
-            )
-        )
-
-        # ----------------------------------------------------
-        # Extract transcript
-        # ----------------------------------------------------
-
-        print()
-        print(
-            "Processing Whisper output..."
+            ),
         )
 
         (
             transcript,
             language,
-            duration
+            duration,
         ) = extract_transcript(
-            transcript_path
+            transcript_path,
         )
 
         update_meeting(
             meeting_id,
             status="transcribed",
             language=language,
-            duration=duration
+            duration=duration,
         )
-
-        print(
-            f"Transcript length: "
-            f"{len(transcript):,} characters"
-        )
-
-        # ----------------------------------------------------
-        # Speaker diarization + alignment
-        # ----------------------------------------------------
 
         update_meeting(
             meeting_id,
-            status="diarizing"
+            status="diarizing",
         )
 
         create_speaker_transcript(
             meeting_id,
-            stored_audio,
-            transcript_path
+            normalized_audio_path,
+            transcript_path,
         )
-
-        print(
-            f"Language: {language}"
-        )
-
-        if duration is not None:
-            print(
-                f"Duration: {duration:.1f} seconds"
-            )
-
-        # ----------------------------------------------------
-        # Qwen
-        # ----------------------------------------------------
 
         update_meeting(
             meeting_id,
-            status="summarizing"
+            status="summarizing",
         )
 
-        summary = summarize(
-            transcript
-        )
-
-        # ----------------------------------------------------
-        # Save summary
-        # ----------------------------------------------------
+        summary = summarize(transcript)
 
         summary_path = save_summary(
             meeting_id,
-            summary
+            summary,
         )
 
         update_meeting(
             meeting_id,
             summary_path=str(
                 summary_path.relative_to(
-                    PROJECT_ROOT
+                    PROJECT_ROOT,
                 )
             ),
-            status="completed"
+            status="completed",
         )
 
-        # ----------------------------------------------------
-        # Display
-        # ----------------------------------------------------
-
-        print_summary(
-            summary
-        )
+        print_summary(summary)
 
         print()
-        print(
-            f"Meeting ID:\n{meeting_id}"
-        )
-
-        print()
-        print(
-            f"Meeting directory:\n"
-            f"{MEETINGS_DIR / meeting_id}"
-        )
-
-        print()
-        print(
-            "Status: completed"
-        )
+        print(f"Meeting ID: {meeting_id}")
+        print("Status: completed")
 
     except Exception as error:
-
         update_meeting(
             meeting_id,
-            status="failed"
+            status="failed",
         )
 
         print()
         print("=" * 70)
         print("PIPELINE FAILED")
         print("=" * 70)
-
-        print()
         print(str(error))
-
-        print()
-        print(
-            f"Meeting ID: {meeting_id}"
-        )
-
-        print(
-            "Status: failed"
-        )
+        print(f"Meeting ID: {meeting_id}")
+        print("Status: failed")
 
         raise
 

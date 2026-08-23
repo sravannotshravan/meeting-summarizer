@@ -5,7 +5,6 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from fastapi import (
-    BackgroundTasks,
     FastAPI,
     File,
     Form,
@@ -25,6 +24,30 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MEETINGS_DIR = PROJECT_ROOT / "data" / "meetings"
 
 executor = ThreadPoolExecutor(max_workers=1)
+
+
+def run_pipeline(meeting_id: str, audio_path: Path) -> None:
+    """Run a meeting pipeline and make worker failures visible in logs."""
+    try:
+        process_existing_meeting(meeting_id, audio_path)
+    except Exception:
+        print(
+            f"Pipeline failed for meeting {meeting_id}",
+            flush=True,
+        )
+        raise
+
+
+def run_retry_pipeline(meeting_id: str, audio_path: Path) -> None:
+    """Clear previous artifacts and run a retry with visible failures."""
+    try:
+        retry_meeting(meeting_id, audio_path)
+    except Exception:
+        print(
+            f"Retry pipeline failed for meeting {meeting_id}",
+            flush=True,
+        )
+        raise
 
 
 class SpeakerNamesUpdate(BaseModel):
@@ -150,7 +173,6 @@ def list_meetings() -> list[dict]:
 
 @app.post("/meetings", status_code=202)
 async def upload_meeting(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     title: str | None = Form(None),
 ) -> dict:
@@ -229,9 +251,8 @@ async def upload_meeting(
 
     # Submit the normal pipeline only.
     # retry_meeting is used by the retry endpoint below.
-    background_tasks.add_task(
-        executor.submit,
-        process_existing_meeting,
+    executor.submit(
+        run_pipeline,
         meeting_id,
         audio_path,
     )
@@ -299,10 +320,10 @@ def retry_failed_meeting(meeting_id: str) -> dict:
             detail="Meeting not found",
         )
 
-    if row["status"] != "failed":
+    if row["status"] not in {"failed", "queued"}:
         raise HTTPException(
             status_code=409,
-            detail="Only failed meetings can be retried",
+            detail="Only failed or queued meetings can be retried",
         )
 
     audio_path = resolve_meeting_path(row["audio_path"])
@@ -319,7 +340,7 @@ def retry_failed_meeting(meeting_id: str) -> dict:
     )
 
     executor.submit(
-        retry_meeting,
+        run_retry_pipeline,
         meeting_id,
         audio_path,
     )

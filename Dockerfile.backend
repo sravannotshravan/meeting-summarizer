@@ -12,12 +12,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /src
 
+# The CUDA driver is provided by the host at runtime. Use the toolkit's
+# stub driver while linking executables inside the image.
+ENV LIBRARY_PATH=/usr/local/cuda/lib64/stubs:${LIBRARY_PATH}
+
 RUN git clone --depth 1 https://github.com/ggerganov/whisper.cpp.git \
     && cmake -S whisper.cpp -B whisper.cpp/build \
         -DGGML_CUDA=ON \
+        -DCMAKE_CUDA_ARCHITECTURES=89 \
+        -DCMAKE_EXE_LINKER_FLAGS="-L/usr/local/cuda/lib64/stubs -Wl,-rpath-link,/usr/local/cuda/lib64/stubs -lcuda" \
     && cmake --build whisper.cpp/build \
+        --target whisper-cli \
         --config Release \
-        -j "$(nproc)"
+        -j "$(nproc)" \
+    && mkdir -p /opt/whisper/bin /opt/whisper/lib \
+    && cp whisper.cpp/build/bin/whisper-cli /opt/whisper/bin/ \
+    && cp whisper.cpp/build/bin/libwhisper.so* /opt/whisper/lib/ \
+    && cp whisper.cpp/build/bin/libggml*.so* /opt/whisper/lib/
 
 
 # ============================================================
@@ -57,9 +68,7 @@ WORKDIR /app
 # ============================================================
 # CUDA-enabled Whisper CLI
 # ============================================================
-COPY --from=whisper-builder \
-    /src/whisper.cpp/build/bin/whisper-cli \
-    /usr/local/bin/whisper-cli
+COPY --from=whisper-builder /opt/whisper/ /usr/local/
 
 
 # ============================================================
@@ -82,6 +91,8 @@ RUN python3.12 -m pip install --no-cache-dir \
 RUN python3.12 -m pip install --no-cache-dir \
     -r requirements.txt
 
+RUN ldconfig
+
 
 # ============================================================
 # Application
@@ -94,6 +105,8 @@ COPY docker/backend-entrypoint.sh /usr/local/bin/backend-entrypoint.sh
 RUN mkdir -p \
         /app/data/meetings \
         /models/whisper \
+    && tr -d '\r' < /usr/local/bin/backend-entrypoint.sh > /tmp/entrypoint.sh \
+    && mv /tmp/entrypoint.sh /usr/local/bin/backend-entrypoint.sh \
     && chmod +x /usr/local/bin/backend-entrypoint.sh
 
 
