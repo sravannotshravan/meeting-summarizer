@@ -1,35 +1,105 @@
-# Build whisper.cpp once, then keep the runtime image focused on the API.
-FROM python:3.11-slim AS whisper-builder
+# ============================================================
+# Build whisper.cpp with CUDA support
+# ============================================================
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04 AS whisper-builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential cmake git ca-certificates \
+    build-essential \
+    cmake \
+    git \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
+
 RUN git clone --depth 1 https://github.com/ggerganov/whisper.cpp.git \
     && cmake -S whisper.cpp -B whisper.cpp/build \
-    && cmake --build whisper.cpp/build --config Release -j "$(nproc)"
+        -DGGML_CUDA=ON \
+    && cmake --build whisper.cpp/build \
+        --config Release \
+        -j "$(nproc)"
 
-FROM python:3.11-slim
 
+# ============================================================
+# CUDA runtime + Python 3.12
+# ============================================================
+FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Ubuntu 22.04 ships with Python 3.10, so install Python 3.12
+# explicitly to match the working WSL environment.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg curl ca-certificates \
+    software-properties-common \
+    ca-certificates \
+    curl \
+    ffmpeg \
+    git \
+    && add-apt-repository ppa:deadsnakes/ppa \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        python3.12 \
+        python3.12-dev \
+        python3.12-venv \
     && rm -rf /var/lib/apt/lists/*
+
+# Install pip for Python 3.12.
+RUN curl -sS https://bootstrap.pypa.io/get-pip.py \
+    | python3.12
+
+# Make python3 point to Python 3.12 inside the container.
+RUN ln -sf /usr/bin/python3.12 /usr/local/bin/python3 \
+    && ln -sf /usr/bin/python3.12 /usr/local/bin/python
 
 WORKDIR /app
 
-COPY --from=whisper-builder /src/whisper.cpp/build/bin/whisper-cli /usr/local/bin/whisper-cli
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
 
+# ============================================================
+# CUDA-enabled Whisper CLI
+# ============================================================
+COPY --from=whisper-builder \
+    /src/whisper.cpp/build/bin/whisper-cli \
+    /usr/local/bin/whisper-cli
+
+
+# ============================================================
+# Python dependencies
+# ============================================================
+COPY requirements.txt .
+
+# Install CUDA-enabled PyTorch first.
+#
+# Using the cu128 index ensures that torch/torchaudio are
+# CUDA-enabled rather than accidentally getting CPU wheels.
+RUN python3.12 -m pip install --no-cache-dir \
+    --index-url https://download.pytorch.org/whl/cu128 \
+    "torch>=2.2.0" \
+    "torchaudio>=2.2.0"
+
+# Install the rest of the application dependencies from PyPI.
+# The already-installed CUDA PyTorch versions satisfy the
+# torch/torchaudio requirements above.
+RUN python3.12 -m pip install --no-cache-dir \
+    -r requirements.txt
+
+
+# ============================================================
+# Application
+# ============================================================
 COPY ai/ ./ai/
 COPY api/ ./api/
 COPY backend/ ./backend/
 COPY docker/backend-entrypoint.sh /usr/local/bin/backend-entrypoint.sh
 
-RUN mkdir -p /app/data/meetings /models/whisper \
+RUN mkdir -p \
+        /app/data/meetings \
+        /models/whisper \
     && chmod +x /usr/local/bin/backend-entrypoint.sh
 
+
+# ============================================================
+# Environment
+# ============================================================
 ENV PYTHONUNBUFFERED=1 \
     HF_HOME=/root/.cache/huggingface \
     WHISPER_CLI_PATH=/usr/local/bin/whisper-cli \
@@ -37,10 +107,28 @@ ENV PYTHONUNBUFFERED=1 \
     LLAMA_URL=http://llama-server:8080/v1/chat/completions \
     LLAMA_MODEL=Qwen3-8B
 
+
+# ============================================================
+# API
+# ============================================================
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+HEALTHCHECK \
+    --interval=30s \
+    --timeout=5s \
+    --start-period=30s \
+    --retries=3 \
     CMD curl --fail http://localhost:8000/health || exit 1
 
 ENTRYPOINT ["/usr/local/bin/backend-entrypoint.sh"]
-CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+CMD [
+    "python3",
+    "-m",
+    "uvicorn",
+    "api.main:app",
+    "--host",
+    "0.0.0.0",
+    "--port",
+    "8000"
+]

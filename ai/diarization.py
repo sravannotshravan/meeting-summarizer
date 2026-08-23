@@ -1,3 +1,5 @@
+import json
+import os
 import time
 from pathlib import Path
 
@@ -14,11 +16,11 @@ def diarize(
     """
     Run speaker diarization on an audio file.
 
+    CUDA is used when available. CPU is used only as a fallback.
+
     Returns:
-        segments:
-            List of speaker segments with start, end and speaker.
-        elapsed:
-            Processing time in seconds.
+        segments: Speaker segments with start, end, and speaker.
+        elapsed: Processing time in seconds.
     """
 
     audio_path = (
@@ -39,28 +41,44 @@ def diarize(
 
     print(f"\nAudio: {audio_path}")
     print(f"Model: {MODEL}")
-
-    print(f"\nPyTorch: {torch.__version__}")
-    print(
-        f"CUDA available: "
-        f"{torch.cuda.is_available()}"
-    )
+    print(f"PyTorch: {torch.__version__}")
+    print(f"CUDA available: {torch.cuda.is_available()}")
 
     if torch.cuda.is_available():
-        print(
-            f"GPU: "
-            f"{torch.cuda.get_device_name(0)}"
-        )
+        device = torch.device("cuda:0")
+
+        print(f"CUDA version: {torch.version.cuda}")
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
+        print("Diarization device: CUDA")
+    else:
+        device = torch.device("cpu")
+        print("Diarization device: CPU fallback")
 
     print("\nLoading pyannote pipeline...")
 
-    pipeline = Pipeline.from_pretrained(MODEL)
+    hf_token = os.getenv("HF_TOKEN")
 
-    if torch.cuda.is_available():
-        pipeline.to(torch.device("cuda"))
-        print("Diarization device: CUDA")
-    else:
-        print("Diarization device: CPU")
+    if not hf_token:
+        raise RuntimeError(
+            "HF_TOKEN is required to load the pyannote model."
+        )
+
+    pipeline = Pipeline.from_pretrained(
+        MODEL,
+        token=hf_token,
+    )
+
+    if pipeline is None:
+        raise RuntimeError(
+            f"Failed to load pyannote pipeline: {MODEL}"
+        )
+
+    # Move every pyannote model component to CUDA.
+    pipeline.to(device)
+
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
+        torch.cuda.empty_cache()
 
     print("\nRunning diarization...")
 
@@ -71,61 +89,42 @@ def diarize(
     elapsed = time.perf_counter() - start
 
     print(
-        f"\nDiarization completed in "
-        f"{elapsed:.2f} seconds"
+        f"\nDiarization completed in {elapsed:.2f} seconds"
     )
 
-    # Community-1 provides exclusive speaker
-    # diarization, which is what we want for
-    # aligning with Whisper.
-    diarization = (
-        output.exclusive_speaker_diarization
-    )
+    # Community-1 provides exclusive speaker diarization.
+    diarization = output.exclusive_speaker_diarization
 
-    segments = []
+    segments: list[dict] = []
 
-    for turn, speaker in diarization:
-
-        segment = {
-            "start": round(
-                turn.start,
-                3,
-            ),
-            "end": round(
-                turn.end,
-                3,
-            ),
-            "speaker": speaker,
-        }
-
-        segments.append(segment)
+    for turn, speaker in diarization.itertracks(
+        yield_label=True
+    ):
+        segments.append(
+            {
+                "start": round(turn.start, 3),
+                "end": round(turn.end, 3),
+                "speaker": speaker,
+            }
+        )
 
     speakers = sorted(
-        set(
+        {
             segment["speaker"]
             for segment in segments
-        )
+        }
     )
 
     print()
     print("=" * 70)
     print("DIARIZATION RESULT")
     print("=" * 70)
+    print(f"Speakers detected: {len(speakers)}")
+    print(f"Speaker labels: {', '.join(speakers)}")
+    print(f"Segments: {len(segments)}")
 
-    print(
-        f"Speakers detected: "
-        f"{len(speakers)}"
-    )
-
-    print(
-        f"Speaker labels: "
-        f"{', '.join(speakers)}"
-    )
-
-    print(
-        f"Segments: "
-        f"{len(segments)}"
-    )
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
 
     return segments, elapsed
 
@@ -133,12 +132,10 @@ def diarize(
 def save_diarization(
     output_path: Path,
     segments: list[dict],
-):
+) -> None:
     """
     Save diarization segments as JSON.
     """
-
-    import json
 
     output_path = Path(output_path)
 
@@ -151,9 +148,9 @@ def save_diarization(
         "w",
         encoding="utf-8",
     ) as file:
-
         json.dump(
             segments,
             file,
             indent=2,
+            ensure_ascii=False,
         )

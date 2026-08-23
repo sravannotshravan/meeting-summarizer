@@ -1,71 +1,31 @@
+import json
 import os
 import shutil
-import uuid
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 from fastapi import (
     BackgroundTasks,
+    FastAPI,
     File,
     Form,
+    HTTPException,
     UploadFile,
 )
-
-from backend.storage import (
-    create_meeting,
-    update_meeting,
-)
-
-from ai.pipeline import (
-    process_existing_meeting,
-    retry_meeting,
-)
-from pathlib import Path
-import json
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
-
-from backend.database import (
-    initialize_database,
-    get_connection,
-)
+from ai.pipeline import process_existing_meeting, retry_meeting
+from backend.database import get_connection, initialize_database
+from backend.storage import create_meeting, update_meeting
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+MEETINGS_DIR = PROJECT_ROOT / "data" / "meetings"
 
-MEETINGS_DIR = (
-    PROJECT_ROOT
-    / "data"
-    / "meetings"
-)
+executor = ThreadPoolExecutor(max_workers=1)
 
-
-app = FastAPI(
-    title="CharchaNotes API",
-    description="Local AI meeting transcription and summarization API",
-    version="0.1.0",
-)
-
-from fastapi.middleware.cors import CORSMiddleware
-
-cors_origins_env = os.getenv(
-    "CORS_ORIGINS",
-    "http://localhost:5173,http://127.0.0.1:5173,http://localhost,http://localhost:80,http://localhost:3000,*"
-)
-cors_origins = [origin.strip() for origin in cors_origins_env.split(",") if origin.strip()]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=cors_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-executor = ThreadPoolExecutor(
-    max_workers=1
-)
 
 class SpeakerNamesUpdate(BaseModel):
     names: dict[str, str] = Field(default_factory=dict)
@@ -75,36 +35,101 @@ class MeetingTitleUpdate(BaseModel):
     title: str
 
 
-def meeting_row_dict(row):
+class BulkDeleteRequest(BaseModel):
+    ids: list[str] = Field(default_factory=list)
+
+
+app = FastAPI(
+    title="CharchaNotes API",
+    description="Local AI meeting transcription and summarization API",
+    version="0.1.0",
+)
+
+
+cors_origins = [
+    origin.strip()
+    for origin in os.getenv(
+        "CORS_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173,http://localhost",
+    ).split(",")
+    if origin.strip()
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+def meeting_row_dict(row) -> dict:
     result = dict(row)
-    result["speaker_names"] = json.loads(result.get("speaker_names") or "{}")
+
+    try:
+        result["speaker_names"] = json.loads(
+            result.get("speaker_names") or "{}"
+        )
+    except json.JSONDecodeError:
+        result["speaker_names"] = {}
+
     return result
 
-@app.on_event("startup")
-def startup():
 
+def get_meeting_row(meeting_id: str):
+    connection = get_connection()
+
+    row = connection.execute(
+        """
+        SELECT *
+        FROM meetings
+        WHERE id = ?
+        """,
+        (meeting_id,),
+    ).fetchone()
+
+    connection.close()
+    return row
+
+
+def resolve_meeting_path(relative_path: str | None) -> Path | None:
+    if not relative_path:
+        return None
+
+    path = (PROJECT_ROOT / relative_path).resolve()
+
+    if PROJECT_ROOT not in path.parents:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid meeting file path",
+        )
+
+    return path
+
+
+def delete_meeting_files(meeting_id: str) -> None:
+    meeting_dir = (MEETINGS_DIR / meeting_id).resolve()
+
+    if MEETINGS_DIR not in meeting_dir.parents:
+        return
+
+    if meeting_dir.exists():
+        shutil.rmtree(meeting_dir)
+
+
+@app.on_event("startup")
+def startup() -> None:
     initialize_database()
 
 
-# ============================================================
-# Health
-# ============================================================
-
 @app.get("/health")
-def health():
+def health() -> dict:
+    return {"status": "ok"}
 
-    return {
-        "status": "ok"
-    }
-
-
-# ============================================================
-# List meetings
-# ============================================================
 
 @app.get("/meetings")
-def list_meetings():
-
+def list_meetings() -> list[dict]:
     connection = get_connection()
 
     rows = connection.execute(
@@ -117,45 +142,23 @@ def list_meetings():
 
     connection.close()
 
-    return [meeting_row_dict(row) for row in rows]
+    return [
+        meeting_row_dict(row)
+        for row in rows
+    ]
 
-@app.patch("/meetings/{meeting_id}")
-def rename_meeting(meeting_id: str, payload: MeetingTitleUpdate):
-    title = payload.title.strip()
-    if not title:
-        raise HTTPException(status_code=400, detail="Meeting title cannot be empty")
-
-    connection = get_connection()
-    row = connection.execute(
-        "SELECT id FROM meetings WHERE id = ?", (meeting_id,)
-    ).fetchone()
-    connection.close()
-
-    if row is None:
-        raise HTTPException(status_code=404, detail="Meeting not found")
-
-    update_meeting(meeting_id, title=title)
-    return {"id": meeting_id, "title": title}
 
 @app.post("/meetings", status_code=202)
 async def upload_meeting(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     title: str | None = Form(None),
-):
-    """
-    Upload a meeting recording and start AI processing.
-    """
-
+) -> dict:
     if not file.filename:
         raise HTTPException(
             status_code=400,
-            detail="No filename provided"
+            detail="No filename provided",
         )
-
-    # --------------------------------------------------------
-    # Validate extension
-    # --------------------------------------------------------
 
     allowed_extensions = {
         ".mp3",
@@ -167,508 +170,410 @@ async def upload_meeting(
         ".flac",
     }
 
-    extension = (
-        Path(file.filename)
-        .suffix
-        .lower()
-    )
+    extension = Path(file.filename).suffix.lower()
 
     if extension not in allowed_extensions:
-
         raise HTTPException(
             status_code=400,
-            detail=(
-                f"Unsupported file type: {extension}"
-            )
+            detail=f"Unsupported file type: {extension}",
         )
 
-    # --------------------------------------------------------
-    # Create database record
-    # --------------------------------------------------------
-
     meeting_title = (
-        title
+        title.strip()
         if title and title.strip()
         else Path(file.filename).stem
     )
 
     meeting = create_meeting(
         title=meeting_title,
-        original_filename=file.filename
+        original_filename=file.filename,
     )
 
     meeting_id = meeting.id
+    meeting_dir = MEETINGS_DIR / meeting_id
+    meeting_dir.mkdir(parents=True, exist_ok=True)
 
-    # --------------------------------------------------------
-    # Create meeting directory
-    # --------------------------------------------------------
-
-    meeting_dir = (
-        MEETINGS_DIR
-        / meeting_id
-    )
-
-    meeting_dir.mkdir(
-        parents=True,
-        exist_ok=True
-    )
-
-    audio_path = (
-        meeting_dir
-        / f"recording{extension}"
-    )
-
-    # --------------------------------------------------------
-    # Save uploaded recording
-    # --------------------------------------------------------
+    audio_path = meeting_dir / f"recording{extension}"
 
     try:
-
-        with audio_path.open(
-            "wb"
-        ) as destination:
-
+        with audio_path.open("wb") as destination:
             while True:
-
-                chunk = await file.read(
-                    1024 * 1024
-                )
+                chunk = await file.read(1024 * 1024)
 
                 if not chunk:
                     break
 
-                destination.write(
-                    chunk
-                )
+                destination.write(chunk)
 
-    except Exception:
-
+    except Exception as error:
         update_meeting(
             meeting_id,
-            status="failed"
+            status="failed",
         )
 
         raise HTTPException(
             status_code=500,
-            detail="Failed to save recording"
-        )
+            detail=f"Failed to save recording: {error}",
+        ) from error
 
     finally:
-
         await file.close()
 
-    # --------------------------------------------------------
-    # Update database
-    # --------------------------------------------------------
-
-    relative_audio_path = (
-        audio_path.relative_to(
-            PROJECT_ROOT
-        )
-    )
+    relative_audio_path = audio_path.relative_to(PROJECT_ROOT)
 
     update_meeting(
         meeting_id,
-        audio_path=str(
-            relative_audio_path
-        ),
-        status="queued"
+        audio_path=str(relative_audio_path),
+        status="queued",
     )
 
-    # --------------------------------------------------------
-    # Start background processing
-    # --------------------------------------------------------
-
+    # Submit the normal pipeline only.
+    # retry_meeting is used by the retry endpoint below.
     background_tasks.add_task(
         executor.submit,
         process_existing_meeting,
-    retry_meeting,
         meeting_id,
-        audio_path
+        audio_path,
     )
-
-    # --------------------------------------------------------
-    # Return immediately
-    # --------------------------------------------------------
 
     return {
         "id": meeting_id,
         "title": meeting_title,
         "filename": file.filename,
-        "status": "queued"
+        "status": "queued",
     }
-# ============================================================
-# Get meeting
-# ============================================================
+
 
 @app.get("/meetings/{meeting_id}")
-def get_meeting(
-    meeting_id: str
-):
-
-    connection = get_connection()
-
-    row = connection.execute(
-        """
-        SELECT *
-        FROM meetings
-        WHERE id = ?
-        """,
-        (meeting_id,)
-    ).fetchone()
-
-    connection.close()
+def get_meeting(meeting_id: str) -> dict:
+    row = get_meeting_row(meeting_id)
 
     if row is None:
-
         raise HTTPException(
             status_code=404,
-            detail="Meeting not found"
+            detail="Meeting not found",
         )
 
     return meeting_row_dict(row)
 
 
-# ============================================================
+@app.patch("/meetings/{meeting_id}")
+def rename_meeting(
+    meeting_id: str,
+    payload: MeetingTitleUpdate,
+) -> dict:
+    title = payload.title.strip()
 
-@app.post("/meetings/{meeting_id}/retry", status_code=202)
-def retry_failed_meeting(meeting_id: str):
-    connection = get_connection()
-    row = connection.execute(
-        "SELECT audio_path, status FROM meetings WHERE id = ?",
-        (meeting_id,),
-    ).fetchone()
-    connection.close()
-
-    if row is None:
-        raise HTTPException(status_code=404, detail="Meeting not found")
-    if row["status"] != "failed":
-        raise HTTPException(status_code=409, detail="Only failed meetings can be retried")
-    if not row["audio_path"]:
-        raise HTTPException(status_code=400, detail="Recording not available")
-
-    audio_path = (PROJECT_ROOT / row["audio_path"]).resolve()
-    if PROJECT_ROOT not in audio_path.parents or not audio_path.exists():
-        raise HTTPException(status_code=404, detail="Recording file not found")
-
-    executor.submit(retry_meeting, meeting_id, audio_path)
-    return {"id": meeting_id, "status": "queued"}
-# Get transcript
-# ============================================================
-
-@app.get(
-    "/meetings/{meeting_id}/transcript"
-)
-def get_transcript(
-    meeting_id: str
-):
-
-    connection = get_connection()
-
-    row = connection.execute(
-        """
-        SELECT transcript_path
-        FROM meetings
-        WHERE id = ?
-        """,
-        (meeting_id,)
-    ).fetchone()
-
-    connection.close()
-
-    if row is None:
-
+    if not title:
         raise HTTPException(
-            status_code=404,
-            detail="Meeting not found"
+            status_code=400,
+            detail="Meeting title cannot be empty",
         )
 
-    if not row["transcript_path"]:
+    row = get_meeting_row(meeting_id)
 
+    if row is None:
         raise HTTPException(
             status_code=404,
-            detail="Transcript not available"
+            detail="Meeting not found",
         )
 
-    transcript_path = (
-        PROJECT_ROOT
-        / row["transcript_path"]
+    update_meeting(
+        meeting_id,
+        title=title,
     )
 
-    if not transcript_path.exists():
+    return {
+        "id": meeting_id,
+        "title": title,
+    }
 
+
+@app.post("/meetings/{meeting_id}/retry", status_code=202)
+def retry_failed_meeting(meeting_id: str) -> dict:
+    row = get_meeting_row(meeting_id)
+
+    if row is None:
         raise HTTPException(
             status_code=404,
-            detail="Transcript file not found"
+            detail="Meeting not found",
+        )
+
+    if row["status"] != "failed":
+        raise HTTPException(
+            status_code=409,
+            detail="Only failed meetings can be retried",
+        )
+
+    audio_path = resolve_meeting_path(row["audio_path"])
+
+    if audio_path is None or not audio_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="Recording file not found",
+        )
+
+    update_meeting(
+        meeting_id,
+        status="queued",
+    )
+
+    executor.submit(
+        retry_meeting,
+        meeting_id,
+        audio_path,
+    )
+
+    return {
+        "id": meeting_id,
+        "status": "queued",
+    }
+
+
+@app.get("/meetings/{meeting_id}/transcript")
+def get_transcript(meeting_id: str):
+    row = get_meeting_row(meeting_id)
+
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Meeting not found",
+        )
+
+    transcript_path = resolve_meeting_path(
+        row["transcript_path"]
+    )
+
+    if transcript_path is None or not transcript_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="Transcript not available",
         )
 
     with transcript_path.open(
         "r",
-        encoding="utf-8"
+        encoding="utf-8",
     ) as file:
-
         return json.load(file)
 
 
-# ============================================================
-# Get speaker transcript
-# ============================================================
-
-@app.get(
-    "/meetings/{meeting_id}/speaker-transcript"
-)
-def get_speaker_transcript(
-    meeting_id: str
-):
-
-    connection = get_connection()
-
-    row = connection.execute(
-        """
-        SELECT speaker_transcript_path
-        FROM meetings
-        WHERE id = ?
-        """,
-        (meeting_id,)
-    ).fetchone()
-
-    connection.close()
+@app.get("/meetings/{meeting_id}/speaker-transcript")
+def get_speaker_transcript(meeting_id: str):
+    row = get_meeting_row(meeting_id)
 
     if row is None:
-
         raise HTTPException(
             status_code=404,
-            detail="Meeting not found"
+            detail="Meeting not found",
         )
 
-    if not row["speaker_transcript_path"]:
-
-        raise HTTPException(
-            status_code=404,
-            detail="Speaker transcript not available"
-        )
-
-    speaker_transcript_path = (
-        PROJECT_ROOT
-        / row["speaker_transcript_path"]
+    transcript_path = resolve_meeting_path(
+        row["speaker_transcript_path"]
     )
 
-    if not speaker_transcript_path.exists():
-
+    if transcript_path is None or not transcript_path.exists():
         raise HTTPException(
             status_code=404,
-            detail="Speaker transcript file not found"
+            detail="Speaker transcript not available",
         )
 
-    with speaker_transcript_path.open(
+    with transcript_path.open(
         "r",
-        encoding="utf-8"
+        encoding="utf-8",
     ) as file:
-
         return json.load(file)
 
-
-# ============================================================
 
 @app.put("/meetings/{meeting_id}/speakers")
-def update_speaker_names(meeting_id: str, payload: SpeakerNamesUpdate):
-    connection = get_connection()
-    row = connection.execute(
-        "SELECT speaker_transcript_path FROM meetings WHERE id = ?",
-        (meeting_id,),
-    ).fetchone()
-    connection.close()
+def update_speaker_names(
+    meeting_id: str,
+    payload: SpeakerNamesUpdate,
+) -> dict:
+    row = get_meeting_row(meeting_id)
 
     if row is None:
-        raise HTTPException(status_code=404, detail="Meeting not found")
+        raise HTTPException(
+            status_code=404,
+            detail="Meeting not found",
+        )
 
     names = {
-        key.strip(): value.strip()
-        for key, value in payload.names.items()
-        if key.strip() and value.strip()
+        speaker.strip(): label.strip()
+        for speaker, label in payload.names.items()
+        if speaker.strip() and label.strip()
     }
-    update_meeting(meeting_id, speaker_names=names)
 
-    if row["speaker_transcript_path"]:
-        transcript_path = PROJECT_ROOT / row["speaker_transcript_path"]
-        if transcript_path.exists():
-            with transcript_path.open("r", encoding="utf-8") as file:
-                transcript = json.load(file)
-            for segment in transcript.get("segments", []):
-                speaker = segment.get("speaker", "UNKNOWN")
-                segment["speaker_label"] = names.get(speaker, speaker)
-            with transcript_path.open("w", encoding="utf-8") as file:
-                json.dump(transcript, file, indent=2, ensure_ascii=False)
-
-    return {"speaker_names": names}
-# Get summary
-# ============================================================
-
-@app.get(
-    "/meetings/{meeting_id}/summary"
-)
-def get_summary(
-    meeting_id: str
-):
-
-    connection = get_connection()
-
-    row = connection.execute(
-        """
-        SELECT summary_path
-        FROM meetings
-        WHERE id = ?
-        """,
-        (meeting_id,)
-    ).fetchone()
-
-    connection.close()
-
-    if row is None:
-
-        raise HTTPException(
-            status_code=404,
-            detail="Meeting not found"
-        )
-
-    if not row["summary_path"]:
-
-        raise HTTPException(
-            status_code=404,
-            detail="Summary not available"
-        )
-
-    summary_path = (
-        PROJECT_ROOT
-        / row["summary_path"]
+    update_meeting(
+        meeting_id,
+        speaker_names=names,
     )
 
-    if not summary_path.exists():
+    transcript_path = resolve_meeting_path(
+        row["speaker_transcript_path"]
+    )
 
+    if transcript_path and transcript_path.exists():
+        with transcript_path.open(
+            "r",
+            encoding="utf-8",
+        ) as file:
+            transcript = json.load(file)
+
+        for segment in transcript.get("segments", []):
+            speaker = segment.get("speaker", "UNKNOWN")
+            segment["speaker_label"] = names.get(
+                speaker,
+                speaker,
+            )
+
+        with transcript_path.open(
+            "w",
+            encoding="utf-8",
+        ) as file:
+            json.dump(
+                transcript,
+                file,
+                indent=2,
+                ensure_ascii=False,
+            )
+
+    return {
+        "speaker_names": names,
+    }
+
+
+@app.get("/meetings/{meeting_id}/summary")
+def get_summary(meeting_id: str):
+    row = get_meeting_row(meeting_id)
+
+    if row is None:
         raise HTTPException(
             status_code=404,
-            detail="Summary file not found"
+            detail="Meeting not found",
+        )
+
+    summary_path = resolve_meeting_path(
+        row["summary_path"]
+    )
+
+    if summary_path is None or not summary_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="Summary not available",
         )
 
     with summary_path.open(
         "r",
-        encoding="utf-8"
+        encoding="utf-8",
     ) as file:
-
         return json.load(file)
 
 
-# ============================================================
-# Get audio
-# ============================================================
-
-@app.get(
-    "/meetings/{meeting_id}/audio"
-)
-def get_audio(
-    meeting_id: str
-):
-
-    connection = get_connection()
-
-    row = connection.execute(
-        """
-        SELECT audio_path
-        FROM meetings
-        WHERE id = ?
-        """,
-        (meeting_id,)
-    ).fetchone()
-
-    connection.close()
+@app.get("/meetings/{meeting_id}/audio")
+def get_audio(meeting_id: str):
+    row = get_meeting_row(meeting_id)
 
     if row is None:
-
         raise HTTPException(
             status_code=404,
-            detail="Meeting not found"
+            detail="Meeting not found",
         )
 
-    if not row["audio_path"]:
+    audio_path = resolve_meeting_path(row["audio_path"])
 
+    if audio_path is None or not audio_path.exists():
         raise HTTPException(
             status_code=404,
-            detail="Recording not available"
+            detail="Recording not available",
         )
 
-    audio_path = (
-        PROJECT_ROOT
-        / row["audio_path"]
-    )
-
-    if not audio_path.exists():
-
-        raise HTTPException(
-            status_code=404,
-            detail="Recording file not found"
-        )
-
-    return FileResponse(
-        audio_path
-    )
+    return FileResponse(audio_path)
 
 
-# ============================================================
-# Delete meeting
-# ============================================================
-
-@app.delete(
-    "/meetings/{meeting_id}"
-)
-def delete_meeting(
-    meeting_id: str
-):
-
-    connection = get_connection()
-
-    row = connection.execute(
-        """
-        SELECT *
-        FROM meetings
-        WHERE id = ?
-        """,
-        (meeting_id,)
-    ).fetchone()
+@app.delete("/meetings/{meeting_id}")
+def delete_meeting(meeting_id: str) -> dict:
+    row = get_meeting_row(meeting_id)
 
     if row is None:
-
-        connection.close()
-
         raise HTTPException(
             status_code=404,
-            detail="Meeting not found"
+            detail="Meeting not found",
         )
+
+    connection = get_connection()
 
     connection.execute(
         """
         DELETE FROM meetings
         WHERE id = ?
         """,
-        (meeting_id,)
+        (meeting_id,),
     )
 
     connection.commit()
     connection.close()
 
-    meeting_dir = (
-        MEETINGS_DIR
-        / meeting_id
-    )
-
-    if meeting_dir.exists():
-
-        import shutil
-
-        shutil.rmtree(
-            meeting_dir
-        )
+    delete_meeting_files(meeting_id)
 
     return {
         "message": "Meeting deleted",
-        "id": meeting_id
+        "id": meeting_id,
+    }
+
+
+@app.delete("/meetings")
+def delete_multiple_meetings(
+    payload: BulkDeleteRequest,
+) -> dict:
+    meeting_ids = list(
+        dict.fromkeys(
+            meeting_id.strip()
+            for meeting_id in payload.ids
+            if meeting_id.strip()
+        )
+    )
+
+    if not meeting_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="No meeting IDs provided",
+        )
+
+    connection = get_connection()
+
+    deleted_ids = []
+
+    for meeting_id in meeting_ids:
+        row = connection.execute(
+            """
+            SELECT id
+            FROM meetings
+            WHERE id = ?
+            """,
+            (meeting_id,),
+        ).fetchone()
+
+        if row is None:
+            continue
+
+        connection.execute(
+            """
+            DELETE FROM meetings
+            WHERE id = ?
+            """,
+            (meeting_id,),
+        )
+
+        deleted_ids.append(meeting_id)
+
+    connection.commit()
+    connection.close()
+
+    for meeting_id in deleted_ids:
+        delete_meeting_files(meeting_id)
+
+    return {
+        "message": "Meetings deleted",
+        "ids": deleted_ids,
+        "count": len(deleted_ids),
     }
