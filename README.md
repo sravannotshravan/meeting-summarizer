@@ -6,6 +6,12 @@ No meeting audio, transcript, or summary is sent to a hosted AI API. The applica
 
 <img width="1794" height="940" alt="image" src="https://github.com/user-attachments/assets/2e29401f-28e6-42ef-951c-ba5f6c95ad2c" />
 
+## Demo Video
+
+https://github.com/user-attachments/assets/7758476e-ba4f-434e-8f06-6089b796b38f
+
+
+
 
 ## What CharchaNotes does
 
